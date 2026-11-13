@@ -25,4 +25,9 @@ jobs:
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 22
+      # The Windows runner's default TEMP is an 8.3 short path, which the
+      # attestation helper refuses as a repository root that differs from Git's.
       - run: node tests/run.js
+        env:
+          TEMP: ${{ runner.temp }}
+          TMP: ${{ runner.temp }}
