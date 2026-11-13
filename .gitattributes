@@ -1,0 +1,2 @@
+# SHA256SUMS.txt covers the shipped bytes, so every checkout uses LF.
+* text=auto eol=lf
