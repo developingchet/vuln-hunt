@@ -1,12 +1,12 @@
-# `/vuln-hunt` v8 isolation policy
+# `/vuln-hunt` isolation policy
 
 Isolation is intentionally handled **outside** the Dynamic Workflow. A workflow boolean cannot create an OS security boundary.
 
-## Why v8 does not force sandboxing for every static scan
+## Why vuln-hunt does not force sandboxing for every static scan
 
 The official Claude Security plugin itself states that it runs under the existing Claude Code session permissions and adds no isolation of its own. Its trust model is code you control; for an untrusted third-party repository, Anthropic suggests running the whole session inside `sandbox-runtime`.
 
-That suggestion-only policy is sensible for trusted source. `/vuln-hunt` also targets authorized research against unfamiliar open-source code, so v8 documents a stronger recommendation for that case without pretending one isolation technology is universally available.
+That suggestion-only policy is sensible for trusted source. `/vuln-hunt` also targets authorized research against unfamiliar open-source code, so vuln-hunt documents a stronger recommendation for that case without pretending one isolation technology is universally available.
 
 Forcing Claude Code's built-in command sandbox on every scan would create two problems:
 
@@ -25,7 +25,7 @@ Forcing Claude Code's built-in command sandbox on every scan would create two pr
 
 ## Built-in Claude Code sandbox
 
-Useful as defense in depth, but not treated as sufficient for v8 dynamic mode.
+Useful as defense in depth, but not treated as sufficient for dynamic mode.
 
 For strict command sandboxing in WSL/Linux, current Claude Code settings support fail-closed behavior such as:
 

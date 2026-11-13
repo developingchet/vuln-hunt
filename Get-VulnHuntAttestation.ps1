@@ -30,19 +30,6 @@ function Get-TrustedApplication([string]$Name){
   }
   throw "No trusted $Name executable outside the target repository was found on PATH."
 }
-$legacyIgnore=Join-Path (Get-Location) '.vuln-hunt\.gitignore'
-if(Test-Path -LiteralPath $legacyIgnore){
-  $item=Get-Item -LiteralPath $legacyIgnore -Force
-  if(($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -or $item.PSIsContainer){throw 'Refusing legacy ignore migration: .vuln-hunt/.gitignore is a reparse/link target or not a regular file.'}
-  $raw=[IO.File]::ReadAllText($legacyIgnore)
-  if($raw -eq "runs/`n" -or $raw -eq "runs/`r`n" -or $raw -eq 'runs/'){
-    $helper=Join-Path $PSScriptRoot 'vuln-hunt-attest.js';if(-not(Test-Path -LiteralPath $helper)){throw "Missing attestation helper: $helper"}
-    $node=Get-TrustedApplication 'node';$trackedJson=& $node.Source $helper --check-output-ignore-tracked;if($LASTEXITCODE -ne 0){throw 'Could not safely determine whether the legacy ignore file is tracked.'};$tracked=$trackedJson|ConvertFrom-Json
-    if($tracked.tracked){throw 'Refusing legacy ignore migration because .vuln-hunt/.gitignore is tracked by Git.'}
-    [IO.File]::WriteAllText($legacyIgnore,"*`n",[Text.UTF8Encoding]::new($false))
-    Write-Warning 'Migrated the exact legacy v7.x untracked .vuln-hunt/.gitignore value from runs/ to * so tool output does not contaminate subsequent manifests.'
-  }
-}
 $helper=Join-Path $PSScriptRoot 'vuln-hunt-attest.js'
 if(-not(Test-Path -LiteralPath $helper)){throw "Missing attestation helper: $helper"}
 $node=Get-TrustedApplication 'node'

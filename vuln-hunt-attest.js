@@ -76,7 +76,7 @@ function oidLike(s){return /^[0-9a-f]{40}(?:[0-9a-f]{24})?$/i.test(s)}
 const topRaw=text(git(['rev-parse','--show-toplevel'])),cwdReal=fs.realpathSync(cwd),topReal=fs.realpathSync(topRaw);if(cwdReal!==topReal)throw new Error(`run attestation from repository root: ${topReal}`);if(/[\0\r\n\t]/.test(topReal)||(path.sep==='/'&&topReal.includes('\\')))throw new Error('repository root contains an unsupported control/backslash character');const repoRoot=topReal.replace(/\\/g,'/');
 if(checkOutputIgnoreTracked){const r=git(['ls-files','--error-unmatch','--','.vuln-hunt/.gitignore'],{allow:[0,1]});emit({tracked:r.status===0,repoRoot});process.exit(0)}
 const commandShadows=[path.join(cwd,'.claude','workflows','vuln-hunt.js'),path.join(cwd,'.claude','commands','vuln-hunt.md'),path.join(cwd,'.claude','skills','vuln-hunt')];
-for(const p of commandShadows)try{fs.lstatSync(p);throw new Error(`project-local /vuln-hunt command shadow detected: ${path.relative(cwd,p).replace(/\\/g,'/')}. Remove/rename it so the installed personal v8 workflow is the command that runs`)}catch(e){if(e&&e.code!=='ENOENT')throw e}
+for(const p of commandShadows)try{fs.lstatSync(p);throw new Error(`project-local /vuln-hunt command shadow detected: ${path.relative(cwd,p).replace(/\\/g,'/')}. Remove/rename it so the installed personal workflow is the command that runs`)}catch(e){if(e&&e.code!=='ENOENT')throw e}
 // A project agent named like a worker outranks the installed user-level
 // worker, which would let the repository choose that worker's tools and
 // instructions. Keep this list identical to vuln-hunt-agents.json.
@@ -90,7 +90,7 @@ function agentShadows(){
 }
 const shadows=agentShadows();if(shadows.length)throw new Error(`project agent shadows a vuln-hunt worker: ${shadows.join(', ')}. Remove or rename it before scanning`);
 const dec=new TextDecoder('utf-8',{fatal:true});
-const legacyIgnorePath=path.join(cwd,'.vuln-hunt','.gitignore');try{const st=fs.lstatSync(legacyIgnorePath);if(st.isFile()){const raw=fs.readFileSync(legacyIgnorePath,'utf8');if(raw==='runs/'||raw==='runs/\n'||raw==='runs/\r\n')throw new Error('legacy v7 .vuln-hunt/.gitignore contains runs/ and would contaminate the manifest; replace it with * or use Get-VulnHuntAttestation.ps1 once to migrate it')}}catch(e){if(e&&e.code!=='ENOENT')throw e}
+const outputIgnorePath=path.join(cwd,'.vuln-hunt','.gitignore');try{const st=fs.lstatSync(outputIgnorePath);if(st.isFile()){const raw=fs.readFileSync(outputIgnorePath,'utf8');if(raw==='runs/'||raw==='runs/\n'||raw==='runs/\r\n')throw new Error('.vuln-hunt/.gitignore contains runs/ and would let tool output into the manifest; replace its contents with *')}}catch(e){if(e&&e.code!=='ENOENT')throw e}
 function zlist(b){const out=[];let start=0;for(let i=0;i<b.length;i++)if(b[i]===0){try{out.push(dec.decode(b.subarray(start,i)))}catch{throw new Error('repository contains a non-UTF-8 pathname; unsupported for safe workflow citation')}start=i+1}if(start!==b.length)throw new Error('expected NUL-terminated Git output');return out}
 const hash=b=>text(git(['hash-object','--no-filters','--stdin'],{input:b}));
 const oid=s=>/^[0-9a-f]{40}(?:[0-9a-f]{24})?$/i.test(s);

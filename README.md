@@ -1,4 +1,4 @@
-# Claude Code `/vuln-hunt` v8
+# vuln-hunt
 
 `/vuln-hunt` is a compact Claude Code Dynamic Workflow for authorized source-code vulnerability research. Its objective is narrow: maximize **novel, independently verified, impactful root causes per total tokens / cost / wall time / custom orchestration**, while making coverage and provenance claims no stronger than the evidence supports.
 
@@ -8,7 +8,7 @@ Use it only on code you are authorized to test.
 
 ## Status
 
-**Experimental.** v8 has been run on a small number of real open-source repositories, mostly Python, JavaScript/TypeScript, Go and Ruby. In one controlled check it found a known advisory, published after the model's training cutoff, in the vulnerable revision and did not report it in the fixed revision. That is far too few runs to estimate recall or false-positive rates, and v8 has not been compared head to head with other security scanners.
+**Experimental.** It has been run on a small number of real open-source repositories, mostly Python, JavaScript/TypeScript, Go and Ruby. In one controlled check it found a known advisory, published after the model's training cutoff, in the vulnerable revision and did not report it in the fixed revision. That is far too few runs to estimate recall or false-positive rates, and it has not been compared head to head with other security scanners.
 
 **Cost.** Whole-repository scans with Opus at high effort cost $11–26 as reported by Claude Code, on repositories with 0.2–0.7 MB of source; larger trees cost more. Nothing limits spending once a scan starts except Claude Code's `--max-budget-usd`, which ends the session, and with it the scan, when reached.
 
@@ -18,49 +18,32 @@ What sets it apart is scan integrity rather than detection rate: the Git manifes
 
 ## Architecture
 
-```text
-external Node attestation (recommended / required for strict + range)
-  ├─ exact Git manifest + hash
-  ├─ Git/range/worktree provenance
-  ├─ deterministic mechanical units + membership hashes
-  └─ special-path/filter/LFS/output checks
-                 │
-                 ▼
-strong recon / threat model
-  └─ assigns every mechanical unit exactly once
-     to <= hunter budget portfolios or an explicit skip
-                 │
-                 ▼
-parallel focused hunters
-  ├─ candidate root causes
-  └─ per-unit coverage receipts
-                 │
-                 ├─ optional one-shot saturated-hunter continuation
-                 ├─ conditional high-risk coverage salvage
-                 └─ cross-portfolio system sweep
-                 │
-                 ▼
-identity-safe exact candidate dedupe
-                 │
-                 ▼
-adaptive adversarial verification
-  ├─ REACHABILITY + IMPACT first
-  ├─ two cited FP votes => reject early
-  ├─ otherwise DEFENSES
-  └─ optional fresh adjudicator for 2-TP disagreement
-                 │
-                 ▼
-VERIFIED roots
-  ├─ optional variants
-  └─ optional externally contained dynamic reproduction
-                 │
-                 ▼
-vuln-hunt-report.md + findings.jsonl + coverage.jsonl
+```mermaid
+flowchart TD
+    A["External Node attestation<br/>(recommended; required for strict and range)<br/>exact Git manifest and hash · Git/range/worktree provenance<br/>deterministic mechanical units and membership hashes<br/>special-path, filter, LFS and output checks"]
+    B["Recon and threat model<br/>assigns every mechanical unit exactly once<br/>to a hunter portfolio or an explicit skip"]
+    C["Parallel focused hunters<br/>candidate root causes · per-unit coverage receipts"]
+    D["Optional one-shot continuation<br/>for saturated hunters"]
+    E["Conditional high-risk<br/>coverage salvage"]
+    F["Cross-portfolio<br/>system sweep"]
+    G["Exact candidate dedupe"]
+    H["Adaptive adversarial verification"]
+    I["VERIFIED root causes"]
+    J["Optional variants"]
+    K["Optional contained<br/>dynamic reproduction"]
+    L["vuln-hunt-report.md · findings.jsonl · coverage.jsonl"]
+
+    A --> B --> C
+    C --> D & E & F
+    C --> G
+    D & E & F --> G
+    G --> H --> I
+    I --> J & K
+    I --> L
+    J & K --> L
 ```
 
 ## Requirements
-
-For `/vuln-hunt` v8:
 
 - Claude Code **2.1.305 or newer**.
 - Dynamic Workflows enabled in Claude Code.
@@ -99,7 +82,7 @@ It installs:
 ~/.claude/agents/vuln-hunt-reporter.md
 ```
 
-The installer backs up an existing personal workflow and warns about project-local workflow/legacy-command/skill collisions named `vuln-hunt`. Before each scan, run `Test-VulnHuntPrereqs.ps1`: current Claude Code workflow precedence allows a project `.claude/workflows/vuln-hunt.js` closer to the working directory to shadow the personal `~/.claude/workflows/vuln-hunt.js`. The prerequisite checker and strict attestation helper refuse known project-local `/vuln-hunt` command collisions rather than silently running an ambiguous command.
+The installer backs up an existing personal workflow and warns about project-local workflow, command or skill collisions named `vuln-hunt`. Before each scan, run `Test-VulnHuntPrereqs.ps1`: current Claude Code workflow precedence allows a project `.claude/workflows/vuln-hunt.js` closer to the working directory to shadow the personal `~/.claude/workflows/vuln-hunt.js`. The prerequisite checker and strict attestation helper refuse known project-local `/vuln-hunt` command collisions rather than silently running an ambiguous command.
 
 After installation, run **`/reload-skills`** in Claude Code (or start a fresh session), confirm Dynamic Workflows are enabled in `/config`, and choose the desired `/model`. Current workflow documentation explicitly says `/reload-skills` re-reads workflow directories after an edited/saved workflow; personal workflows live under `~/.claude/workflows/`.
 
@@ -261,30 +244,19 @@ Citations and coverage receipts are structured `{file, line, endLine?}` objects.
 
 Verifier state machine:
 
-```text
-REACHABILITY + IMPACT run in parallel
-
-both cited FALSE_POSITIVE
-    => REJECTED (third vote cannot change the 2-FP decision)
-
-otherwise run DEFENSES
-
-3 TP
-    => VERIFIED
-
->=2 FP
-    => REJECTED
-
-range + >=2 PREDATES_CHANGE
-    => PREDATES_CHANGE
-
-2 TP + dissent/unknown
-    => fresh adjudicator when enabled
-       TP => VERIFIED
-       otherwise => UNRESOLVED (except supported predate resolution)
-
-missing/incomplete panel
-    => UNRESOLVED
+```mermaid
+flowchart TD
+    S["REACHABILITY and IMPACT<br/>verifiers run in parallel"] --> Q1{"Both cited<br/>FALSE_POSITIVE?"}
+    Q1 -- yes --> R1["REJECTED<br/>(a third vote cannot change a 2-FP decision)"]
+    Q1 -- no --> D["DEFENSES verifier runs"]
+    D --> Q2{"Panel outcome"}
+    Q2 -- "3 TP" --> V["VERIFIED"]
+    Q2 -- "2 or more FP" --> R2["REJECTED"]
+    Q2 -- "range scan and 2 or more PREDATES_CHANGE" --> P["PREDATES_CHANGE"]
+    Q2 -- "2 TP with dissent or unknown" --> ADJ{"Fresh adjudicator<br/>(when enabled)"}
+    ADJ -- TP --> V
+    ADJ -- otherwise --> U1["UNRESOLVED<br/>(unless a supported predate resolution applies)"]
+    Q2 -- "missing or incomplete panel" --> U2["UNRESOLVED"]
 ```
 
 The adaptive early stop is a cost optimization, not a claim that two votes are universally equivalent to three. Its effect on false rejection has not been measured.
@@ -498,7 +470,7 @@ The suite covers helper/runtime capabilities, repository-local executable poison
 
 ## What remains intentionally unproven
 
-v8 still does **not** establish that:
+vuln-hunt does **not** establish that:
 
 - a model literally read every file represented by a reached unit
 - `rootKey` perfectly identifies semantic root-cause equivalence
