@@ -1,5 +1,5 @@
 [CmdletBinding()]
-param([switch]$RequireClaudeSecurity)
+param()
 $ErrorActionPreference='Stop'
 # Executables are resolved before Git can name the top level, so every ancestor holding a .git entry bounds repository-controlled content, as does the main checkout named by a linked worktree's .git file.
 function Get-LinkedMainRoot([string]$GitFile){
@@ -54,7 +54,6 @@ if($git -and $node -and (Test-Path -LiteralPath $helper)){
   $tmp=Join-Path ([IO.Path]::GetTempPath()) ('vuln-hunt-prereq-'+[guid]::NewGuid().ToString('N'))
   try{New-Item -ItemType Directory -Force $tmp|Out-Null;& $git.Source -C $tmp init -q;Push-Location $tmp;try{$j=& $node.Source $helper --self-test;$ok=$LASTEXITCODE -eq 0;if($ok){$o=$j|ConvertFrom-Json;$ok=[bool]$o.ok};Add-Result 'Attestation Git capability self-test' $ok ($j|Out-String).Trim()}finally{Pop-Location}}catch{Add-Result 'Attestation Git capability self-test' $false $_.Exception.Message}finally{if(Test-Path -LiteralPath $tmp){Remove-Item $tmp -Recurse -Force -ErrorAction SilentlyContinue}}
 }else{Add-Result 'Attestation Git capability self-test' $false 'requires node, git, and bundled helper'}
-if($RequireClaudeSecurity){$py=Get-TrustedApplication 'python3';if($py){$pv=(& $py.Source --version 2>&1|Out-String).Trim();$ok=$false;if($pv -match '(\d+\.\d+\.\d+)'){$ok=([version]$Matches[1] -ge [version]'3.9.0')};Add-Result 'python3 >= 3.9 (Claude Security comparison)' $ok $pv}else{Add-Result 'python3 >= 3.9 (Claude Security comparison)' $false 'python3 not on PATH'}}
 $rows|Format-Table -AutoSize
-Write-Host 'Manual check: in Claude Code /config, ensure Dynamic workflows are enabled; keep the workflow size/concurrency settings fixed for benchmarks.'
+Write-Host 'Manual check: in Claude Code /config, ensure Dynamic workflows are enabled; keep the workflow size/concurrency settings fixed between runs you compare.'
 if($rows.Where({-not $_.OK}).Count){exit 1}

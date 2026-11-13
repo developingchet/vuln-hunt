@@ -36,14 +36,14 @@ $agentsSrc=Join-Path $PSScriptRoot 'vuln-hunt-agents.json'
 $launchSrc=Join-Path $PSScriptRoot 'vuln-hunt-launch.js'
 foreach($p in @($workflowSrc,$attestSrc,$wrapperSrc,$prereqSrc,$postflightSrc,$agentsSrc,$launchSrc)){if(-not(Test-Path -LiteralPath $p)){throw "Missing package file: $p"}}
 $nodeCmd=Get-TrustedApplication 'node'
-if(-not $nodeCmd){throw 'Node.js was not found on PATH. v8 strict provenance requires the bundled Node attestation helper.'}
+if(-not $nodeCmd){throw 'Node.js was not found on PATH. Strict provenance requires the bundled Node attestation helper.'}
 try{
   $nodeCaps=& $nodeCmd.Source -e "const c=require('crypto'),f=require('fs');if(typeof TextDecoder!=='function'||typeof c.randomUUID!=='function'||typeof f.lstatSync!=='function')process.exit(2);process.stdout.write(process.version)"
   if($LASTEXITCODE -ne 0){throw "Node runtime lacks required standard-library APIs"}
   Write-Host "Node prerequisite OK: $nodeCaps"
 }catch{throw "Node prerequisite failed: $($_.Exception.Message)"}
 $gitCmd=Get-TrustedApplication 'git'
-if(-not $gitCmd){throw 'Git was not found on PATH. /vuln-hunt v8 requires Git-backed provenance.'}
+if(-not $gitCmd){throw 'Git was not found on PATH. /vuln-hunt requires Git-backed provenance.'}
 $tmp=Join-Path ([IO.Path]::GetTempPath()) ('vuln-hunt-selftest-'+[guid]::NewGuid().ToString('N'))
 try{
   New-Item -ItemType Directory -Force $tmp|Out-Null
@@ -59,7 +59,7 @@ if($claudeCmd){
     $verText=(& $claudeCmd.Source --version 2>$null | Out-String)
     if($verText -match '(\d+\.\d+\.\d+)'){
       $ver=[version]$Matches[1]
-      if($ver -lt [version]'2.1.305'){Write-Warning "Claude Code $ver detected. Update to v2.1.305+ before running v8; older workflow runtimes could unexpectedly rerun completed agents on replay."}
+      if($ver -lt [version]'2.1.305'){Write-Warning "Claude Code $ver detected. Update to v2.1.305+ before running vuln-hunt; older workflow runtimes could unexpectedly rerun completed agents on replay."}
     }
   }catch{Write-Warning "Could not verify Claude Code version: $($_.Exception.Message)"}
 }else{Write-Warning 'Claude Code CLI was not found on PATH; install/update it before running the workflow.'}
@@ -89,11 +89,9 @@ foreach($p in $defs.PSObject.Properties){
   [IO.File]::WriteAllText($dst,$text,[Text.UTF8Encoding]::new($false))
   Write-Host "Installed worker agent: $dst"
 }
-$legacySkill=Join-Path $claude 'skills\vuln-hunt'
-if(Test-Path -LiteralPath $legacySkill){$legacyBackup=Join-Path $claude "vuln-hunt-legacy-skill-$nonce";Move-Item -LiteralPath $legacySkill -Destination $legacyBackup;Write-Host "Moved legacy user-level vuln-hunt Skill to: $legacyBackup"}
-foreach($rel in @('.claude\workflows\vuln-hunt.js','.claude\commands\vuln-hunt.md','.claude\skills\vuln-hunt')){$projectCollision=Join-Path (Get-Location) $rel;if(Test-Path -LiteralPath $projectCollision){Write-Warning "Project-local /vuln-hunt command collision detected: $projectCollision. Rename/remove it before using the personal v8 workflow."}}
-Write-Host "Installed vuln-hunt v8 workflow: $workflowDst"
+foreach($rel in @('.claude\workflows\vuln-hunt.js','.claude\commands\vuln-hunt.md','.claude\skills\vuln-hunt')){$projectCollision=Join-Path (Get-Location) $rel;if(Test-Path -LiteralPath $projectCollision){Write-Warning "Project-local /vuln-hunt command collision detected: $projectCollision. Rename/remove it before using the personal workflow."}}
+Write-Host "Installed vuln-hunt workflow: $workflowDst"
 Write-Host "Installed attestation helper: $toolDir"
 Write-Host 'Next: in Claude Code run /reload-skills (or start a fresh session), ensure Dynamic workflows are enabled in /config, choose /model, then run /vuln-hunt.'
-Write-Host "For strict provenance and benchmarks, start Claude Code from the repository root with: node `"$(Join-Path $toolDir 'vuln-hunt-launch.js')`""
+Write-Host "For strict provenance, start Claude Code from the repository root with: node `"$(Join-Path $toolDir 'vuln-hunt-launch.js')`""
 Write-Host 'and generate a fresh attestation for every run.'
