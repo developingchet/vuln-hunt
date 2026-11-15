@@ -7,7 +7,7 @@
 // workflow still loads, which --restricted would prevent.
 const fs=require('fs'),os=require('os'),path=require('path'),{spawnSync}=require('child_process');
 const argv=process.argv.slice(2),dryRun=argv[0]==='--dry-run',passThrough=dryRun?argv.slice(1):argv;
-if(argv[0]==='--help'){console.log('Usage: node vuln-hunt-launch.js [--dry-run] [claude arguments...]\nRun from the repository root, then start the scan with /vuln-hunt.');process.exit(0)}
+if(argv[0]==='--help'){console.log('Usage: node vuln-hunt-launch.js [--dry-run] [claude arguments...]\nRun from the repository root, then start the scan with /vuln-hunt:scan (plugin) or /vuln-hunt (manual install).');process.exit(0)}
 function inside(base,target){const r=path.relative(base,target);return r===''||(!r.startsWith(`..${path.sep}`)&&r!=='..'&&!path.isAbsolute(r))}
 // Same boundary as vuln-hunt-attest.js: every ancestor holding a .git entry,
 // plus the main checkout named by a linked worktree's .git file.
@@ -34,7 +34,9 @@ const agents=JSON.parse(fs.readFileSync(path.join(__dirname,'vuln-hunt-agents.js
 // shared-temp path would let another local user substitute MCP servers.
 const claude=resolveClaude(),privateDir=fs.mkdtempSync(path.join(os.tmpdir(),'vuln-hunt-')),noMcp=path.join(privateDir,'no-mcp.json');
 // Interactive sessions accept --agents only as inline JSON, not as a file path.
-const args=['--agents',JSON.stringify(agents),'--setting-sources','user','--strict-mcp-config','--mcp-config',noMcp,...passThrough];
+// --mcp-config takes several values, so a flag follows it before the passed
+// arguments; otherwise a positional prompt would be read as a second config.
+const args=['--agents',JSON.stringify(agents),'--setting-sources','user','--mcp-config',noMcp,'--strict-mcp-config',...passThrough];
 // A headless (-p) session stops waiting for background workflows after ten
 // minutes and the scan is aborted; wait for it unless the caller set a limit.
 const waitCeiling=process.env.CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS??'0',env={...process.env,CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS:waitCeiling};

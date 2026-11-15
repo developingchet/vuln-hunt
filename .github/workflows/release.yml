@@ -1,0 +1,98 @@
+name: Release
+
+# Publishes a GitHub release for a tag made by `claude plugin tag`
+# (vuln-hunt--v<version>): the plugin as a zip and a checksum file, both
+# signed with cosign, and the version's CHANGELOG entry as the notes.
+
+on:
+  push:
+    tags: ['vuln-hunt--v*']
+
+permissions:
+  contents: read
+
+jobs:
+  github-release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write # create the release
+      id-token: write # cosign keyless signing of the release files
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Check the tag against the manifest
+        id: version
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          version="${TAG#vuln-hunt--v}"
+          manifest=$(node -p "require('./.claude-plugin/plugin.json').version")
+          if [ "$version" != "$manifest" ]; then
+            echo "::error::tag $TAG does not match version $manifest in plugin.json"
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+      - name: Test the tagged tree
+        run: node tests/run.js
+      - name: Package and checksum
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          git archive --format=zip -o "vuln-hunt-$VERSION.zip" HEAD
+          sha256sum "vuln-hunt-$VERSION.zip" > checksums.txt
+          cat checksums.txt
+      - uses: sigstore/cosign-installer@756fe2d284c7292c4e9b62c8a28f1e5629c59532 # v4.1.3
+      - name: Sign the release files
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          for file in checksums.txt "vuln-hunt-$VERSION.zip"; do
+            cosign sign-blob --yes --bundle "$file.sigstore.json" "$file"
+          done
+      - name: Release notes
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          awk -v heading="## $VERSION " 'index($0, heading) == 1 { found = 1; next } found && /^## / { exit } found' CHANGELOG.md > changes.md
+          if [ ! -s changes.md ]; then
+            echo "::error::CHANGELOG.md has no entry for $VERSION"
+            exit 1
+          fi
+          {
+            cat changes.md
+            echo
+            echo '## Install'
+            echo
+            echo '```text'
+            echo '/plugin marketplace add developingchet/vuln-hunt'
+            echo '/plugin install vuln-hunt@vuln-hunt'
+            echo '```'
+            echo
+            echo 'Use it only on code you are authorized to test. It needs dynamic workflows, Git and Node.js; see [Requirements](https://github.com/developingchet/vuln-hunt#requirements).'
+            echo
+            echo '## Verify the release files'
+            echo
+            echo '`checksums.txt` and the zip are signed with cosign (`*.sigstore.json`):'
+            echo
+            echo '```bash'
+            echo 'cosign verify-blob checksums.txt --bundle checksums.txt.sigstore.json \'
+            echo "  --certificate-identity 'https://github.com/developingchet/vuln-hunt/.github/workflows/release.yml@refs/tags/$TAG' \\"
+            echo '  --certificate-oidc-issuer https://token.actions.githubusercontent.com'
+            echo 'sha256sum -c checksums.txt'
+            echo '```'
+          } > notes.md
+          cat notes.md
+      - uses: softprops/action-gh-release@8a0cd651e5b2365bd640854a3fa5dfc70e4875f3 # v3.0.4
+        with:
+          name: vuln-hunt ${{ steps.version.outputs.version }}
+          body_path: notes.md
+          files: |
+            vuln-hunt-*.zip
+            checksums.txt
+            *.sigstore.json

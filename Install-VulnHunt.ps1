@@ -12,7 +12,7 @@ function Get-LinkedMainRoot([string]$GitFile){
   return $null
 }
 function Get-RepositoryBoundaries{
-  $start=[IO.Path]::GetFullPath((Get-Location).Path);$roots=@()
+  $start=[IO.Path]::GetFullPath((Get-Location).ProviderPath);$roots=@()
   for($d=$start;$d;$d=[IO.Path]::GetDirectoryName($d)){
     $g=Join-Path $d '.git'
     if(Test-Path -LiteralPath $g){$roots+=$d;if(Test-Path -LiteralPath $g -PathType Leaf){$main=Get-LinkedMainRoot $g;if($main){$roots+=$main}}}
@@ -83,13 +83,15 @@ New-Item -ItemType Directory -Force $agentDir|Out-Null
 $defs=[IO.File]::ReadAllText($agentsSrc)|ConvertFrom-Json
 foreach($p in $defs.PSObject.Properties){
   $d=$p.Value
-  $text=(@('---',"name: $($p.Name)","description: `"$($d.description)`"","tools: $(@($d.tools) -join ', ')","model: $($d.model)","omitClaudeMd: $(([string]$d.omitClaudeMd).ToLowerInvariant())",'---','',$d.prompt,'') -join "`n")
+  # A YAML double-quoted scalar treats backslash as an escape and ends at a quote.
+  $description=([string]$d.description).Replace('\','\\').Replace('"','\"')
+  $text=(@('---',"name: $($p.Name)","description: `"$description`"","tools: $(@($d.tools) -join ', ')","model: $($d.model)","omitClaudeMd: $(([string]$d.omitClaudeMd).ToLowerInvariant())",'---','',$d.prompt,'') -join "`n")
   $dst=Join-Path $agentDir "$($p.Name).md"
   if((Test-Path -LiteralPath $dst) -and [IO.File]::ReadAllText($dst) -ne $text){Copy-Item -LiteralPath $dst -Destination "$dst.$nonce.bak" -Force;Write-Host "Backed up existing agent to: $dst.$nonce.bak"}
   [IO.File]::WriteAllText($dst,$text,[Text.UTF8Encoding]::new($false))
   Write-Host "Installed worker agent: $dst"
 }
-foreach($rel in @('.claude\workflows\vuln-hunt.js','.claude\commands\vuln-hunt.md','.claude\skills\vuln-hunt')){$projectCollision=Join-Path (Get-Location) $rel;if(Test-Path -LiteralPath $projectCollision){Write-Warning "Project-local /vuln-hunt command collision detected: $projectCollision. Rename/remove it before using the personal workflow."}}
+foreach($rel in @('.claude\workflows\vuln-hunt.js','.claude\commands\vuln-hunt.md','.claude\skills\vuln-hunt')){$projectCollision=Join-Path (Get-Location).ProviderPath $rel;if(Test-Path -LiteralPath $projectCollision){Write-Warning "Project-local /vuln-hunt command collision detected: $projectCollision. Rename/remove it before using the personal workflow."}}
 Write-Host "Installed vuln-hunt workflow: $workflowDst"
 Write-Host "Installed attestation helper: $toolDir"
 Write-Host 'Next: in Claude Code run /reload-skills (or start a fresh session), ensure Dynamic workflows are enabled in /config, choose /model, then run /vuln-hunt.'

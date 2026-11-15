@@ -2,7 +2,8 @@
 
 ## Supported versions
 
-Only the latest commit on `main` receives security fixes.
+Only the latest release, and the latest commit on `main`, receive security fixes. Update the plugin with
+`/plugin update vuln-hunt@vuln-hunt`.
 
 ## Reporting a vulnerability
 
@@ -11,8 +12,9 @@ Only the latest commit on `main` receives security fixes.
 Report privately through [GitHub private vulnerability reporting](https://github.com/developingchet/vuln-hunt/security/advisories/new) (the **Security** tab, then **Report a vulnerability**).
 
 Please include:
-- the vuln-hunt commit and Claude Code version
-- how you ran it (launcher or not, attestation or not, static or dynamic mode)
+- the vuln-hunt version or commit and the Claude Code version
+- how you installed and ran it (plugin or manual install, launcher or not, attestation or not, static or dynamic
+  mode)
 - steps to reproduce, and the impact you expect
 
 GitHub keeps the report confidential until a fix is released.

@@ -1,0 +1,14 @@
+{
+  "name": "vuln-hunt",
+  "owner": { "name": "developingchet" },
+  "metadata": {
+    "description": "The vuln-hunt workflow for authorized source-code vulnerability research in Claude Code."
+  },
+  "plugins": [
+    {
+      "name": "vuln-hunt",
+      "source": "./",
+      "description": "Workflow for authorized source-code vulnerability research: Git-attested scope, read-only research agents, unit-by-unit coverage and independently verified findings."
+    }
+  ]
+}

@@ -1,0 +1,15 @@
+{
+  "name": "vuln-hunt",
+  "displayName": "vuln-hunt",
+  "version": "0.0.1",
+  "description": "Workflow for authorized source-code vulnerability research: Git-attested scope, read-only research agents, unit-by-unit coverage and independently verified findings.",
+  "author": { "name": "developingchet" },
+  "homepage": "https://github.com/developingchet/vuln-hunt",
+  "repository": "https://github.com/developingchet/vuln-hunt",
+  "license": "MIT",
+  "keywords": ["security", "vulnerability-research", "code-audit", "static-analysis", "workflow"],
+  "icon": "./.claude-plugin/icon.png",
+  "documentationUrl": "https://github.com/developingchet/vuln-hunt#readme",
+  "supportUrl": "https://github.com/developingchet/vuln-hunt/issues",
+  "workflows": ["./vuln-hunt.js"]
+}

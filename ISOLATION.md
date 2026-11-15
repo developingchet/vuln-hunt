@@ -1,33 +1,40 @@
-# `/vuln-hunt` isolation policy
+# vuln-hunt isolation policy
 
-Isolation is intentionally handled **outside** the Dynamic Workflow. A workflow boolean cannot create an OS security boundary.
+Isolation is handled **outside** the workflow. A workflow option cannot create an operating-system security
+boundary, so vuln-hunt documents which boundary each kind of scan needs and leaves enforcing it to the environment
+Claude Code runs in.
 
-## Why vuln-hunt does not force sandboxing for every static scan
+## Why static scans do not force a sandbox
 
-The official Claude Security plugin itself states that it runs under the existing Claude Code session permissions and adds no isolation of its own. Its trust model is code you control; for an untrusted third-party repository, Anthropic suggests running the whole session inside `sandbox-runtime`.
+Anthropic's [Claude Security plugin](https://github.com/anthropics/claude-plugins-official/blob/main/plugins/claude-security/README.md)
+runs under the existing Claude Code session permissions and adds no isolation of its own. Its trust model is code
+you control; for a repository you do not trust, it suggests running the whole session inside
+[sandbox-runtime](https://github.com/anthropics/sandbox-runtime).
 
-That suggestion-only policy is sensible for trusted source. `/vuln-hunt` also targets authorized research against unfamiliar open-source code, so vuln-hunt documents a stronger recommendation for that case without pretending one isolation technology is universally available.
+That is sensible for trusted source. vuln-hunt is also meant for authorized research on unfamiliar open-source
+code, so it recommends more for that case, without pretending one isolation technology is available everywhere.
 
-Forcing Claude Code's built-in command sandbox on every scan would create two problems:
+Forcing Claude Code's built-in sandbox on every scan would cause two problems:
 
-1. it would reduce portability, especially on native Windows; and
-2. it could create false confidence because the built-in sandbox controls shell-command execution, not every file tool, hook, MCP server, helper process or other session capability.
+1. it would not work everywhere: on native Windows, Claude Code runs commands unsandboxed; and
+2. it would give false confidence, because the built-in sandbox covers shell commands, not file tools, hooks, MCP
+   servers or other parts of the session
+   ([what runs outside the sandbox](https://code.claude.com/docs/en/sandboxing#what-runs-outside-the-sandbox)).
 
-## Policy matrix
+## Policy
 
 | Situation | Minimum policy |
 |---|---|
-| Trusted repository, static source reading only | isolation optional; least privilege and no unnecessary tools still preferred |
-| Unfamiliar/third-party repository, static scan | whole-session isolation strongly recommended |
-| Repository intentionally containing adversarial prompt/config content | whole-session isolation strongly recommended; disable unnecessary MCP/hooks/network capabilities |
-| Build/test/fuzz/reproducer/target execution | disposable externally enforced whole-session/container/VM boundary required |
+| Trusted repository, static scan | isolation optional; least privilege and no unnecessary tools still preferred |
+| Unfamiliar or third-party repository, static scan | whole-session isolation strongly recommended |
+| Repository likely to contain adversarial prompts or configuration | whole-session isolation strongly recommended; start through the launcher; no unneeded MCP servers, hooks or network |
+| Building, testing, fuzzing or running the target | disposable, externally enforced whole-session, container or VM boundary required |
 | Hostile native binaries or build system | disposable VM preferred |
 
 ## Built-in Claude Code sandbox
 
-Useful as defense in depth, but not treated as sufficient for dynamic mode.
-
-For strict command sandboxing in WSL/Linux, current Claude Code settings support fail-closed behavior such as:
+The [sandbox](https://code.claude.com/docs/en/sandboxing) is useful defense in depth, but it is not enough for
+dynamic mode. On macOS, Linux and WSL2 you can make it fail closed in your user settings:
 
 ```json
 {
@@ -40,32 +47,36 @@ For strict command sandboxing in WSL/Linux, current Claude Code settings support
 }
 ```
 
-Do not copy this blindly into an enterprise policy without checking current Claude Code documentation and your own required tools. `allowNestedUserNamespaces` is deliberately false because current documentation warns that enabling it can undermine filesystem isolation on Linux/WSL2.
+Each key is described under [sandbox settings](https://code.claude.com/docs/en/settings-reference#sandbox).
+Keep `allowNestedUserNamespaces` false: the documentation warns that turning it on "turns off a security boundary:
+code from a sandboxed command can end up running outside the sandbox"
+([Chromium or rootless Podman](https://code.claude.com/docs/en/sandboxing#chromium-or-rootless-podman-fails-inside-the-sandbox-on-linux)).
+Check your own tools before copying this into a shared or managed policy.
 
-Native Windows does not provide the same command sandbox; use WSL2, a container, sandbox-runtime where suitable, or a VM.
+On native Windows, use WSL2, a container, sandbox-runtime where it fits, or a VM.
 
-## Whole-process options
+## Whole-session options
 
-Current Claude Code documentation distinguishes broader isolation options:
+| Option | Notes |
+|---|---|
+| [sandbox-runtime](https://code.claude.com/docs/en/sandbox-environments#sandbox-runtime) | Wraps the whole Claude Code process, including file tools, MCP servers and hooks. A beta research preview. |
+| [Dev container](https://code.claude.com/docs/en/devcontainer) or [custom container](https://code.claude.com/docs/en/sandbox-environments#custom-container) | Separates processes and files from the host when configured correctly. Anything inside the container, including Claude Code's own credentials, is reachable by the code it runs. |
+| [Virtual machine](https://code.claude.com/docs/en/sandbox-environments#virtual-machine) or a cloud session | The simplest strong boundary for unfamiliar or hostile repositories. |
 
-- `sandbox-runtime`: wraps the full Claude Code process; currently documented as beta/research preview
-- container: stronger process/filesystem separation when correctly configured
-- dedicated VM/cloud session: strongest simple boundary for unfamiliar/hostile repositories
+No option is safe because of its name. Check that:
 
-No option is secure merely because it has a label. Verify:
+- no host credentials are in the environment or in mounted home directories
+- no Docker socket or other privileged host control channel is reachable
+- no sensitive host folders are mounted
+- no production tokens or SSH agents are present
+- outbound network access is off when it is not needed
+- CPU, memory, process count and time are bounded
+- the filesystem is disposable or snapshotted
+- no inherited MCP server, plugin or hook reaches past the boundary
 
-- no host credentials in environment or mounted home directories
-- no Docker socket / privileged host control channel
-- no sensitive host mounts
-- no production tokens or SSH agents
-- network egress disabled when not required
-- bounded CPU/RAM/PIDs/time
-- disposable filesystem/snapshot
-- no inherited MCP/plugin/hook that escapes the intended boundary
+## Dynamic mode
 
-## Dynamic mode contract
-
-`/vuln-hunt` requires all of:
+Dynamic reproduction runs target code, so the workflow requires the operator to state the boundary it runs in:
 
 ```json
 {
@@ -76,17 +87,23 @@ No option is secure merely because it has a label. Verify:
 }
 ```
 
-Accepted `containment` strings are `sandbox-runtime`, `container`, `vm`, and `cloud-session`.
+`containment` is one of `sandbox-runtime`, `container`, `vm` or `cloud-session`, and `network` and `credentials`
+must be `false`. This is the operator's assertion. The workflow cannot check the VM, container or session
+configuration.
 
-This is an **operator assertion only**. The workflow cannot independently prove the VM/container/session configuration.
+## Prompt injection and isolation
 
-## Prompt injection versus isolation
+Isolation and prompt-injection resistance solve different problems:
 
-Isolation and prompt-injection resistance solve different problems.
+- isolation limits what a misled agent, or code it runs, can affect;
+- the prompts tell every agent to treat `CLAUDE.md`, comments, fixtures, file names and all other repository text as
+  evidence, never instructions.
 
-- Isolation limits what a compromised/misled agent or executed process can affect.
-- Repository-content guards tell the model to treat `CLAUDE.md`, comments, fixtures, filenames and other repository text as evidence rather than instructions.
+Keep both; a sandbox is not a reason to drop the guards.
 
-Keep both. Do not remove prompt-injection guards because a sandbox exists.
-
-Research stages run as the read-only `vuln-hunt-researcher` worker (Read, Glob, Grep, `omitClaudeMd:true`), so a misled researcher cannot run commands, write files or reach the network. That limits what injected repository text can make a researcher do, but it is not containment. The mechanic and reporter workers can run commands, and in an ordinary session a subdirectory `CLAUDE.md` still loads when a worker reads files there. Starting the session through `vuln-hunt-launch.js` also drops project settings, hooks, `CLAUDE.md` files and MCP servers. Whole-session isolation is still what bounds a hostile repository.
+Research stages run as the `vuln-hunt-researcher` worker, which has only Read, Glob and Grep and starts without
+`CLAUDE.md`, so a misled researcher cannot run commands, write files or reach the network. That limits what injected
+text can make a researcher do, but it is not containment: the mechanic and reporter workers can run commands, and in
+an ordinary session a subdirectory `CLAUDE.md` still loads when a worker reads files there. Starting the session
+through `vuln-hunt-launch.js` also leaves out project settings, hooks, `CLAUDE.md` files and MCP servers. For a
+hostile repository, whole-session isolation is still what sets the limit.

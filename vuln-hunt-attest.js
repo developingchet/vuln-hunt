@@ -15,7 +15,13 @@ for(let i=0;i<argv.length;i++){
 }
 if(comparePath&&fingerprintRunId)throw new Error('--compare and --fingerprint are mutually exclusive');
 const rangeRe=/^[A-Za-z0-9][A-Za-z0-9._~^/@:+{}-]*(?:\.{2,3}[A-Za-z0-9][A-Za-z0-9._~^/@:+{}-]*)?$/;
-if(range&&!rangeRe.test(range))throw new Error('range contains unsupported characters');
+// Split once at the first separator. Refs cannot contain "..", so text left
+// over after it is a malformed range, never a longer valid one.
+function rangeParts(spec){const m=/^(.*?)(\.{2,3})(.*)$/s.exec(spec);if(!m)return null;const [,a,sep,b]=m;if(!a||!b||b.startsWith('.')||b.includes('..'))throw new Error(`malformed range: ${spec}; use REF, A..B or A...B`);return{a,b,symmetric:sep==='...'}}
+if(range){if(!rangeRe.test(range))throw new Error('range contains unsupported characters');rangeParts(range)}
+// realpathSync.native resolves letter case and 8.3 short names on Windows, so
+// one directory reached through two spellings compares equal.
+function real(p){try{return fs.realpathSync.native(p)}catch(e){if(e&&['ENOENT','ENOTDIR','ELOOP'].includes(e.code))throw e;return fs.realpathSync(p)}}
 function inside(base,target){const r=path.relative(base,target);return r===''||(!r.startsWith(`..${path.sep}`)&&r!=='..'&&!path.isAbsolute(r))}
 // Executables are resolved before Git can name the top level, so every
 // ancestor holding a .git entry bounds repository-controlled content. A
@@ -27,7 +33,7 @@ function linkedMainRoot(gitFile){
     const m=/^gitdir:\s*(.+?)\s*$/m.exec(fs.readFileSync(gitFile,'utf8'));if(!m)return null;
     const gitdir=path.resolve(path.dirname(gitFile),m[1]);let common=gitdir;
     try{common=path.resolve(gitdir,fs.readFileSync(path.join(gitdir,'commondir'),'utf8').trim())}catch(e){if(!e||e.code!=='ENOENT')throw e}
-    return path.basename(common)==='.git'?fs.realpathSync(path.dirname(common)):null;
+    return path.basename(common)==='.git'?real(path.dirname(common)):null;
   }catch{return null}
 }
 function repositoryBoundaries(start){
@@ -39,20 +45,20 @@ function repositoryBoundaries(start){
   }
   return roots.length?[...new Set(roots)]:[start];
 }
-const untrustedRoots=repositoryBoundaries(fs.realpathSync(cwd)),untrusted=p=>untrustedRoots.some(r=>inside(r,p));
+const untrustedRoots=repositoryBoundaries(real(cwd)),untrusted=p=>untrustedRoots.some(r=>inside(r,p));
 function resolveGitExecutable(){
   const dirs=String(process.env.PATH||'').split(path.delimiter),exts=process.platform==='win32'?[...new Set(String(process.env.PATHEXT||'.EXE;.COM').split(';').filter(e=>/^\.(?:exe|com)$/i.test(e)))]:[''];
-  for(let raw of dirs){raw=raw.trim();if(raw.length>=2&&raw[0]==='\"'&&raw.at(-1)==='\"')raw=raw.slice(1,-1);if(!raw||!path.isAbsolute(raw))continue;let dir;try{dir=fs.realpathSync(raw)}catch{continue}if(untrusted(dir))continue;
-    for(const ext of exts){const candidate=path.join(dir,`git${ext}`);try{const real=fs.realpathSync(candidate),st=fs.statSync(real);if(untrusted(real)||!st.isFile())continue;if(process.platform!=='win32')fs.accessSync(real,fs.constants.X_OK);return real}catch{}}
+  for(let raw of dirs){raw=raw.trim();if(raw.length>=2&&raw[0]==='\"'&&raw.at(-1)==='\"')raw=raw.slice(1,-1);if(!raw||!path.isAbsolute(raw))continue;let dir;try{dir=real(raw)}catch{continue}if(untrusted(dir))continue;
+    for(const ext of exts){const candidate=path.join(dir,`git${ext}`);try{const exe=real(candidate),st=fs.statSync(exe);if(untrusted(exe)||!st.isFile())continue;if(process.platform!=='win32')fs.accessSync(exe,fs.constants.X_OK);return exe}catch{}}
   }
   throw new Error(`could not resolve a trusted Git executable from PATH outside the enclosing repository roots (${untrustedRoots.join(', ')}). If one of them is a home-directory repository, run from a checkout outside it or install Git elsewhere`);
 }
 const gitExecutable=resolveGitExecutable();
 // The workflow's freshness check re-executes this helper with this Node, so
 // neither may live in repository-controlled content.
-const helperPath=fs.realpathSync(__filename),nodePath=fs.realpathSync(process.execPath);
+const helperPath=real(__filename),nodePath=real(process.execPath);
 if(untrusted(helperPath)||untrusted(nodePath))throw new Error('run the installed attestation helper with a Node runtime outside the target repository');
-const env={...process.env};for(const k of Object.keys(env))if(['GIT_DIR','GIT_WORK_TREE','GIT_INDEX_FILE','GIT_OBJECT_DIRECTORY','GIT_ALTERNATE_OBJECT_DIRECTORIES','GIT_COMMON_DIR','GIT_NAMESPACE','GIT_CEILING_DIRECTORIES','GIT_DISCOVERY_ACROSS_FILESYSTEM','GIT_CONFIG','GIT_CONFIG_GLOBAL','GIT_CONFIG_SYSTEM','GIT_CONFIG_NOSYSTEM','GIT_CONFIG_COUNT','GIT_CONFIG_PARAMETERS','GIT_QUARANTINE_PATH','GIT_SHALLOW_FILE','GIT_EXEC_PATH','GIT_EXTERNAL_DIFF','GIT_ATTR_NOSYSTEM'].includes(k)||/^GIT_CONFIG_(?:KEY|VALUE)_\d+$/.test(k)||/^GIT_TRACE(?:_|$)/.test(k))delete env[k];Object.assign(env,{GIT_OPTIONAL_LOCKS:'0',GIT_TERMINAL_PROMPT:'0',GIT_PAGER:'cat',PAGER:'cat',GIT_NO_LAZY_FETCH:'1',GIT_NO_REPLACE_OBJECTS:'1',NoDefaultCurrentDirectoryInExePath:'1'});
+const env={...process.env};for(const k of Object.keys(env))if(['GIT_DIR','GIT_WORK_TREE','GIT_INDEX_FILE','GIT_OBJECT_DIRECTORY','GIT_ALTERNATE_OBJECT_DIRECTORIES','GIT_COMMON_DIR','GIT_NAMESPACE','GIT_CEILING_DIRECTORIES','GIT_DISCOVERY_ACROSS_FILESYSTEM','GIT_CONFIG','GIT_CONFIG_GLOBAL','GIT_CONFIG_SYSTEM','GIT_CONFIG_NOSYSTEM','GIT_CONFIG_COUNT','GIT_CONFIG_PARAMETERS','GIT_QUARANTINE_PATH','GIT_SHALLOW_FILE','GIT_EXEC_PATH','GIT_EXTERNAL_DIFF','GIT_DIFF_OPTS','GIT_ATTR_NOSYSTEM','GIT_ATTR_SOURCE'].includes(k)||/^GIT_CONFIG_(?:KEY|VALUE)_\d+$/.test(k)||/^GIT_TRACE(?:_|$)/.test(k))delete env[k];Object.assign(env,{GIT_OPTIONAL_LOCKS:'0',GIT_TERMINAL_PROMPT:'0',GIT_PAGER:'cat',PAGER:'cat',GIT_NO_LAZY_FETCH:'1',GIT_NO_REPLACE_OBJECTS:'1',NoDefaultCurrentDirectoryInExePath:'1'});
 function git(args,{input=null,allow=[0]}={}){
   const r=spawnSync(gitExecutable,['--no-replace-objects','--no-optional-locks','-c','core.fsmonitor=false','-c','core.pager=cat',...args],{cwd,env,input,encoding:null,maxBuffer:1024*1024*256});
   if(!allow.includes(r.status)){const err=(r.stderr||Buffer.alloc(0)).toString('utf8').trim();throw new Error(`git ${args[0]} failed (${r.status}): ${err.slice(0,500)}`)}
@@ -73,7 +79,7 @@ if(selfTest){
   emit({ok:Object.values(checks).every(Boolean),checks});process.exit(0);
 }
 function oidLike(s){return /^[0-9a-f]{40}(?:[0-9a-f]{24})?$/i.test(s)}
-const topRaw=text(git(['rev-parse','--show-toplevel'])),cwdReal=fs.realpathSync(cwd),topReal=fs.realpathSync(topRaw);if(cwdReal!==topReal)throw new Error(`run attestation from repository root: ${topReal}`);if(/[\0\r\n\t]/.test(topReal)||(path.sep==='/'&&topReal.includes('\\')))throw new Error('repository root contains an unsupported control/backslash character');const repoRoot=topReal.replace(/\\/g,'/');
+const topRaw=text(git(['rev-parse','--show-toplevel'])),topReal=fs.realpathSync(topRaw);if(real(cwd)!==real(topRaw))throw new Error(`run attestation from repository root: ${topReal}`);if(/[\0\r\n\t]/.test(topReal)||(path.sep==='/'&&topReal.includes('\\')))throw new Error('repository root contains an unsupported control/backslash character');const repoRoot=topReal.replace(/\\/g,'/');
 if(checkOutputIgnoreTracked){const r=git(['ls-files','--error-unmatch','--','.vuln-hunt/.gitignore'],{allow:[0,1]});emit({tracked:r.status===0,repoRoot});process.exit(0)}
 const commandShadows=[path.join(cwd,'.claude','workflows','vuln-hunt.js'),path.join(cwd,'.claude','commands','vuln-hunt.md'),path.join(cwd,'.claude','skills','vuln-hunt')];
 for(const p of commandShadows)try{fs.lstatSync(p);throw new Error(`project-local /vuln-hunt command shadow detected: ${path.relative(cwd,p).replace(/\\/g,'/')}. Remove/rename it so the installed personal workflow is the command that runs`)}catch(e){if(e&&e.code!=='ENOENT')throw e}
@@ -81,10 +87,28 @@ for(const p of commandShadows)try{fs.lstatSync(p);throw new Error(`project-local
 // worker, which would let the repository choose that worker's tools and
 // instructions. Keep this list identical to vuln-hunt-agents.json.
 const WORKER_AGENTS=['vuln-hunt-researcher','vuln-hunt-mechanic','vuln-hunt-reporter'];
+// YAML lets a name hide behind a BOM, quoted keys, trailing comments, block
+// scalars, escapes and aliases, and Claude Code ends frontmatter at the first
+// later `---` wherever it falls on a line, so neither an exact parse nor a
+// strict delimiter can be trusted. Any agent file that opens with `---` is
+// refused when its whole text mentions a worker name once double-quoted
+// escapes and escaped line breaks are decoded, and a file named after a worker
+// is refused whatever it contains.
+function namesWorker(file,text){
+  if(WORKER_AGENTS.includes(path.basename(file).replace(/\.md$/i,'').toLowerCase()))return true;
+  if(!/^\uFEFF?\s*---/.test(text))return false;
+  const decoded=text.replace(/\\(?:\r\n?|\n)[ \t]*/g,'').replace(/\\(?:x([0-9A-Fa-f]{2})|u([0-9A-Fa-f]{4})|U([0-9A-Fa-f]{8}))/g,(m,x,u,U)=>{const c=parseInt(x||u||U,16);return c<=0x10ffff?String.fromCodePoint(c):m}).toLowerCase();
+  return WORKER_AGENTS.some(n=>decoded.includes(n));
+}
 function agentShadows(){
-  const key=p=>process.platform==='win32'?path.resolve(p).toLowerCase():path.resolve(p),userAgents=key(path.join(require('os').homedir(),'.claude','agents')),found=[];
-  const walk=dir=>{let entries;try{entries=fs.readdirSync(dir,{withFileTypes:true})}catch(e){if(e&&['ENOENT','ENOTDIR'].includes(e.code))return;throw e}
-    for(const e of entries){const p=path.join(dir,e.name);if(e.isDirectory())walk(p);else if(/\.md$/i.test(e.name)){const fm=/^---\r?\n([\s\S]*?)\r?\n---/.exec(fs.readFileSync(p,'utf8')),m=fm&&/^name:\s*["']?(.+?)["']?\s*$/m.exec(fm[1]);if(m&&WORKER_AGENTS.includes(m[1].trim()))found.push(p)}}};
+  const key=p=>process.platform==='win32'?path.resolve(p).toLowerCase():path.resolve(p),userAgentsPath=path.join(require('os').homedir(),'.claude','agents'),userAgents=key(userAgentsPath),found=[],seen=new Set();
+  let userAgentsReal=userAgents;try{userAgentsReal=key(real(userAgentsPath))}catch(e){if(!e||!['ENOENT','ENOTDIR'].includes(e.code))throw e}
+  // Directory links and junctions are followed, since Claude Code loads agents
+  // through them; each real directory is walked once, which also ends cycles.
+  const walk=dir=>{let entries,where;try{where=key(real(dir));entries=fs.readdirSync(dir,{withFileTypes:true})}catch(e){if(e&&['ENOENT','ENOTDIR','ELOOP'].includes(e.code))return;throw e}
+    if(seen.has(where)||where===userAgentsReal)return;seen.add(where);
+    for(const e of entries){const p=path.join(dir,e.name);let st=e;if(e.isSymbolicLink())try{st=fs.statSync(p)}catch(err){if(err&&['ENOENT','ENOTDIR','ELOOP'].includes(err.code))continue;throw err}
+      if(st.isDirectory())walk(p);else if(st.isFile()&&/\.md$/i.test(e.name)&&namesWorker(p,fs.readFileSync(p,'utf8')))found.push(p)}};
   for(let d=cwd;;){const a=path.join(d,'.claude','agents');if(key(a)!==userAgents)walk(a);const up=path.dirname(d);if(up===d)break;d=up}
   return found;
 }
@@ -94,7 +118,9 @@ const outputIgnorePath=path.join(cwd,'.vuln-hunt','.gitignore');try{const st=fs.
 function zlist(b){const out=[];let start=0;for(let i=0;i<b.length;i++)if(b[i]===0){try{out.push(dec.decode(b.subarray(start,i)))}catch{throw new Error('repository contains a non-UTF-8 pathname; unsupported for safe workflow citation')}start=i+1}if(start!==b.length)throw new Error('expected NUL-terminated Git output');return out}
 const hash=b=>text(git(['hash-object','--no-filters','--stdin'],{input:b}));
 const oid=s=>/^[0-9a-f]{40}(?:[0-9a-f]{24})?$/i.test(s);
-const safeRel=p=>p.length>0&&!p.includes('\\')&&!/[\0\r\n\t]/.test(p)&&!path.isAbsolute(p)&&!p.split('/').includes('..');
+// ls-files --others lists an untracked nested repository as one "dir/" entry
+// and never its files, so the entry is unsupported rather than scanned.
+const safeRel=p=>p.length>0&&!p.endsWith('/')&&!p.includes('\\')&&!/[\0\r\n\t]/.test(p)&&!path.isAbsolute(p)&&!p.split('/').includes('..');
 function rev(ref){const s=text(git(['rev-parse','--verify',`${ref}^{commit}`]));if(!oid(s))throw new Error(`could not resolve commit: ${ref}`);return s}
 function mergeBase(a,b){const s=text(git(['merge-base',a,b]));if(!oid(s))throw new Error(`could not resolve merge-base for ${a} and ${b}`);return s}
 function emptyTree(){const s=text(git(['hash-object','-t','tree','--stdin'],{input:Buffer.alloc(0)}));if(!oid(s))throw new Error('could not hash empty tree');return s}
@@ -112,6 +138,9 @@ function rangeFiles(base,head){
     const r=git(['--literal-pathspecs','diff','-U0','-M','--no-color','--no-ext-diff','--no-textconv',base,head,'--',...(e.oldPath?[e.oldPath]:[]),e.path]).stdout.toString('utf8');
     let hunk=null,used=0;
     for(const line of r.split('\n')){
+      // A type change prints two diffs for one path; the second one's ---
+      // header is not a removed line of the first one's last hunk.
+      if(line.startsWith('diff --git ')){hunk=null;continue}
       const h=/^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/.exec(line);
       if(h){hunk={oldStart:+h[1],oldLines:h[2]===undefined?1:+h[2],newStart:+h[3],newLines:h[4]===undefined?1:+h[4],removed:''};f.hunks.push(hunk);continue}
       if(!hunk){if(/^Binary files /.test(line))f.binary=true;continue}
@@ -124,11 +153,12 @@ function rangeFiles(base,head){
 }
 function rangeInfo(spec){
   if(!spec)return{range:null,rangeBase:'',rangeHead:'',changedRaw:Buffer.alloc(0),rangeFiles:[],rangeFilesTruncated:false,rangeEvidenceTruncated:false};
-  let base,head;
-  if(spec.includes('...')){const [a,b]=spec.split('...');const ra=rev(a),rb=rev(b);base=mergeBase(ra,rb);head=rb}
-  else if(spec.includes('..')){const [a,b]=spec.split('..');base=rev(a);head=rev(b)}
+  let base,head;const parts=rangeParts(spec);
+  if(parts?.symmetric){const ra=rev(parts.a),rb=rev(parts.b);base=mergeBase(ra,rb);head=rb}
+  else if(parts){base=rev(parts.a);head=rev(parts.b)}
   else {head=rev(spec);const p=git(['rev-parse','--verify',`${spec}^1^{commit}`],{allow:[0,128]});base=p.status===0?text(p):emptyTree()}
-  const changedRaw=git(['diff','--name-only','-z','--no-ext-diff','--no-textconv',base,head,'--']).stdout;
+  // --no-renames lists both sides of a rename whatever diff.renames says.
+  const changedRaw=git(['diff','--name-only','-z','--no-renames','--no-ext-diff','--no-textconv',base,head,'--']).stdout;
   return{range:spec,rangeBase:base,rangeHead:head,changedRaw,...rangeFiles(base,head)};
 }
 function stageSpecial(){
@@ -152,8 +182,9 @@ function isPartialClone(){
 }
 function hasGrafts(){const gp=text(git(['rev-parse','--git-path','info/grafts'])),p=path.isAbsolute(gp)?gp:path.resolve(cwd,gp);try{fs.lstatSync(p);return true}catch(e){if(e&&e.code==='ENOENT')return false;throw e}}
 function hasAlternates(){const ap=text(git(['rev-parse','--git-path','objects/info/alternates'])),p=path.isAbsolute(ap)?ap:path.resolve(cwd,ap);try{const st=fs.lstatSync(p);if(st.isSymbolicLink()||!st.isFile())return true;return fs.readFileSync(p,'utf8').split(/\r?\n/).some(x=>x.trim().length>0)}catch(e){if(e&&e.code==='ENOENT')return false;throw e}}
-function isOutputSafe(runId,tracked){
-  if([...tracked].some(p=>p==='.vuln-hunt'||p.startsWith('.vuln-hunt/')))return false;
+function isOutputSafe(runId,tracked,ignoreCase){
+  const fold=p=>ignoreCase?p.toLowerCase():p;
+  if([...tracked].some(p=>fold(p)==='.vuln-hunt'||fold(p).startsWith('.vuln-hunt/')))return false;
   for(const rel of ['.vuln-hunt','.vuln-hunt/runs']){
     const p=path.join(cwd,...rel.split('/'));let s;try{s=fs.lstatSync(p)}catch(e){if(e&&e.code==='ENOENT')continue;throw e}if(s.isSymbolicLink()||!s.isDirectory())return false;
   }
@@ -214,9 +245,14 @@ const LOCAL_METADATA_EXCLUDES=[".DS_Store","Thumbs.db","ehthumbs.db","desktop.in
 const untrackedFilter=['--exclude-per-directory=.gitignore',...LOCAL_METADATA_EXCLUDES.map(p=>`--exclude=${p}`)];
 const revision=rev('HEAD'),trackedRaw=git(['ls-files','--cached','-z']).stdout,manifestRaw=git(['ls-files','--cached','--others',...untrackedFilter,'-z']).stdout,manifest=zlist(manifestRaw);
 const unsafePaths=manifest.filter(p=>!safeRel(p)),untracked=zlist(git(['ls-files','--others',...untrackedFilter,'-z']).stdout),deletedTracked=zlist(git(['ls-files','--deleted','-z']).stdout),special=stageSpecial(),filters=filterInfo(trackedRaw);
+// Git does not compare an assume-unchanged (lowercase tag) or skip-worktree
+// (S, set by sparse checkout or by hand) entry with the working tree, so edits
+// to one are invisible to the diffs below and the tree cannot be called clean.
+const hiddenEntries=zlist(git(['ls-files','-v','-z']).stdout).filter(e=>/^(?:[a-z]|S) /.test(e)).map(e=>e.slice(2));
+if(hiddenEntries.length){const msg=`index entries marked assume-unchanged or skip-worktree hide working-tree edits from Git (${hiddenEntries.slice(0,5).join(', ')}${hiddenEntries.length>5?', ...':''}); clear them with git update-index --no-assume-unchanged --no-skip-worktree, or disable sparse checkout`;if(range)throw new Error(`${msg} before range attestation`);process.stderr.write(`warning: ${msg}. The worktree is attested as DIRTY.\n`)}
 let worktreeState,dirty;
 if(partialClone){worktreeState='UNKNOWN_PARTIAL';dirty=false}
-else {const staged=git(['diff-index','--cached','--quiet','HEAD','--'],{allow:[0,1]});if(staged.status===1||untracked.length>0||deletedTracked.length>0){worktreeState='DIRTY';dirty=true}else if(filters.customFiltersCount>0){worktreeState='UNKNOWN_FILTERS';dirty=false}else{const unstaged=git(['diff','--quiet','--no-ext-diff','--no-textconv','HEAD','--'],{allow:[0,1]});worktreeState=unstaged.status===1?'DIRTY':'CLEAN';dirty=unstaged.status===1}}
+else {const staged=git(['diff-index','--cached','--quiet','HEAD','--'],{allow:[0,1]});if(staged.status===1||untracked.length>0||deletedTracked.length>0||hiddenEntries.length>0){worktreeState='DIRTY';dirty=true}else if(filters.customFiltersCount>0){worktreeState='UNKNOWN_FILTERS';dirty=false}else{const unstaged=git(['diff','--quiet','--no-ext-diff','--no-textconv','HEAD','--'],{allow:[0,1]});worktreeState=unstaged.status===1?'DIRTY':'CLEAN';dirty=unstaged.status===1}}
 const ri=rangeInfo(range),changed=zlist(ri.changedRaw),runId=fingerprintRunId||crypto.randomUUID();
 // contentHash binds the working-tree bytes of every manifest entry, so a
 // DIRTY attestation still detects later edits. Bytes are read directly, never
@@ -238,7 +274,7 @@ const contentHash=crypto.createHash('sha256').update(Buffer.concat(contentParts)
 const rootCounts=Object.create(null);for(const p of manifest){const root=p.split('/')[0];rootCounts[root]=(rootCounts[root]||0)+1}
 const unitInfo=mechanicalUnits(manifest);
 const ignoreCase=boolConfig('core.ignoreCase'),caseMap=new Map(),caseCollisions=[];let caseCollisionCount=0;if(ignoreCase)for(const p of manifest){const k=p.normalize('NFC').toLowerCase();if(caseMap.has(k)&&caseMap.get(k)!==p){caseCollisionCount++;if(caseCollisions.length<32)caseCollisions.push([caseMap.get(k),p])}else caseMap.set(k,p)}
-const out={version:4,runId,repoRoot,revision,dirty,worktreeState,...filters,manifestHash:hash(manifestRaw),contentHash,totalFiles:manifest.length,rootCounts,...unitInfo,trackedSymlinks:special.trackedSymlinks,submodules:special.submodules,deletedTracked,sparse:boolConfig('core.sparseCheckout'),shallow:text(git(['rev-parse','--is-shallow-repository']))==='true',partialClone,graftsPresent,alternatesPresent,ignoreCase,caseCollisionCount,caseCollisions,lfsPointers,lfsPointerCount,lfsPointersTruncated:lfsPointerCount>lfsPointers.length,unsupportedPaths:unsafePaths,outputPathSafe:isOutputSafe(runId,new Set(zlist(trackedRaw))),range:ri.range,rangeBase:ri.rangeBase,rangeHead:ri.rangeHead,changedFiles:changed.slice(0,256),changedFilesTruncated:changed.length>256,changedFilesHash:hash(ri.changedRaw),changedFilesCount:changed.length,rangeFiles:ri.rangeFiles,rangeFilesTruncated:ri.rangeFilesTruncated,rangeEvidenceTruncated:ri.rangeEvidenceTruncated,helperPath:helperPath.replace(/\\/g,'/'),nodePath:nodePath.replace(/\\/g,'/')};
+const out={version:4,runId,repoRoot,revision,dirty,worktreeState,...filters,manifestHash:hash(manifestRaw),contentHash,totalFiles:manifest.length,rootCounts,...unitInfo,trackedSymlinks:special.trackedSymlinks,submodules:special.submodules,deletedTracked,sparse:boolConfig('core.sparseCheckout'),shallow:text(git(['rev-parse','--is-shallow-repository']))==='true',partialClone,graftsPresent,alternatesPresent,ignoreCase,caseCollisionCount,caseCollisions,lfsPointers,lfsPointerCount,lfsPointersTruncated:lfsPointerCount>lfsPointers.length,unsupportedPaths:unsafePaths,outputPathSafe:isOutputSafe(runId,new Set(zlist(trackedRaw)),ignoreCase),range:ri.range,rangeBase:ri.rangeBase,rangeHead:ri.rangeHead,changedFiles:changed.slice(0,256),changedFilesTruncated:changed.length>256,changedFilesHash:hash(ri.changedRaw),changedFilesCount:changed.length,rangeFiles:ri.rangeFiles,rangeFilesTruncated:ri.rangeFilesTruncated,rangeEvidenceTruncated:ri.rangeEvidenceTruncated,helperPath:helperPath.replace(/\\/g,'/'),nodePath:nodePath.replace(/\\/g,'/')};
 // Every field that describes repository state. stateHash summarizes them so
 // the workflow can compare a short --fingerprint line instead of the whole
 // attestation.
@@ -248,6 +284,10 @@ const STATE_FIELDS=['version','repoRoot','revision','dirty','worktreeState','cus
 // the trip through the model that passes it along.
 const canon=x=>Array.isArray(x)?x.map(canon):x&&typeof x==='object'?Object.fromEntries(Object.keys(x).sort().map(k=>[k,canon(x[k])])):x;
 out.stateHash=crypto.createHash('sha256').update(JSON.stringify(STATE_FIELDS.map(k=>[k,canon(out[k]??null)]))).digest('hex');
-if(fingerprintRunId){emit({version:4,runId,repoRoot,revision,worktreeState,manifestHash:out.manifestHash,contentHash,stateHash:out.stateHash,outputPathSafe:out.outputPathSafe});process.exit(0)}
+// The fingerprint names the helper and Node that produced it. Both passed this
+// helper's own repository-boundary check from the repository root, which the
+// workflow cannot repeat, so the workflow requires them to equal the attested
+// helperPath and nodePath.
+if(fingerprintRunId){emit({version:4,runId,repoRoot,revision,worktreeState,manifestHash:out.manifestHash,contentHash,stateHash:out.stateHash,outputPathSafe:out.outputPathSafe,helperPath:out.helperPath,nodePath:out.nodePath});process.exit(0)}
 // Windows PowerShell 5.1 `Set-Content -Encoding utf8` prepends a BOM.
 if(comparePath){const before=JSON.parse(fs.readFileSync(path.resolve(comparePath),'utf8').replace(/^﻿/,'')),mismatches=STATE_FIELDS.filter(k=>JSON.stringify(before?.[k]??null)!==JSON.stringify(out?.[k]??null));emit({ok:mismatches.length===0,mismatches,beforeRunId:before?.runId||null,currentRunId:out.runId,current:out});process.exitCode=mismatches.length?2:0}else emit(out);
