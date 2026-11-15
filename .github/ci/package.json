@@ -1,0 +1,8 @@
+{
+  "name": "vuln-hunt-ci",
+  "private": true,
+  "description": "The Claude Code release CI validates the plugin with, pinned by the lockfile beside it.",
+  "dependencies": {
+    "@anthropic-ai/claude-code": "2.1.325"
+  }
+}

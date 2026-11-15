@@ -15,7 +15,7 @@ function Get-LinkedMainRoot([string]$GitFile){
   return $null
 }
 function Get-RepositoryBoundaries{
-  $start=[IO.Path]::GetFullPath((Get-Location).Path);$roots=@()
+  $start=[IO.Path]::GetFullPath((Get-Location).ProviderPath);$roots=@()
   for($d=$start;$d;$d=[IO.Path]::GetDirectoryName($d)){
     $g=Join-Path $d '.git'
     if(Test-Path -LiteralPath $g){$roots+=$d;if(Test-Path -LiteralPath $g -PathType Leaf){$main=Get-LinkedMainRoot $g;if($main){$roots+=$main}}}

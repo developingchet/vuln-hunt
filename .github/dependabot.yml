@@ -7,3 +7,15 @@ updates:
     groups:
       actions:
         patterns: ['*']
+  # Claude Code in .github/ci stays at the release the plugin is validated
+  # with: version updates skip it, security updates still apply.
+  - package-ecosystem: npm
+    directory: /.github/ci
+    schedule:
+      interval: weekly
+    ignore:
+      - dependency-name: '@anthropic-ai/claude-code*'
+        update-types:
+          - version-update:semver-major
+          - version-update:semver-minor
+          - version-update:semver-patch
