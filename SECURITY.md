@@ -3,7 +3,8 @@
 ## Supported versions
 
 Only the latest release, and the latest commit on `main`, receive security fixes. Update the plugin with
-`/plugin update vuln-hunt@vuln-hunt`.
+`claude plugin update vuln-hunt@vuln-hunt`, or, for an install pinned to a release, as
+[Install a release](README.md#install-a-release) describes.
 
 ## Reporting a vulnerability
 
