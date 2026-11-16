@@ -70,11 +70,11 @@ jobs:
             echo '## Install'
             echo
             echo '```text'
-            echo "/plugin marketplace add developingchet/vuln-hunt#$TAG"
+            echo '/plugin marketplace add developingchet/vuln-hunt'
             echo '/plugin install vuln-hunt@vuln-hunt'
             echo '```'
             echo
-            echo 'The `#'"$TAG"'` suffix pins the install to this release. To move an existing install to this release, pinned or not, run `/plugin marketplace remove vuln-hunt` first; see [Install a release](https://github.com/developingchet/vuln-hunt#install-a-release).'
+            echo 'An install that follows the default branch receives this release with `claude plugin update vuln-hunt@vuln-hunt`. To install exactly this release instead, add the marketplace as `developingchet/vuln-hunt#'"$TAG"'`, after `/plugin marketplace remove vuln-hunt` if it is already added; see [Install a release](https://github.com/developingchet/vuln-hunt#install-a-release).'
             echo
             echo 'Use it only on code you are authorized to test. It needs dynamic workflows, Git and Node.js; see [Requirements](https://github.com/developingchet/vuln-hunt#requirements).'
             echo
