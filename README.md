@@ -101,16 +101,53 @@ claude plugin install vuln-hunt@vuln-hunt
 Run `/reload-plugins` in a session that was already open. See
 [Discover and install plugins](https://code.claude.com/docs/en/plugins/install#add-a-marketplace).
 
-### Update and remove
+These commands install the plugin from the default branch, which can hold changes made since the last release.
+
+### Install a release
+
+A marketplace added with `#<tag>` installs the tree of that release. Each
+[release](https://github.com/developingchet/vuln-hunt/releases) is tagged `vuln-hunt--v<version>` and its notes
+give the exact commands:
 
 ```text
-/plugin marketplace update vuln-hunt
-/plugin update vuln-hunt@vuln-hunt
-/plugin uninstall vuln-hunt@vuln-hunt
+/plugin marketplace add developingchet/vuln-hunt#vuln-hunt--v<version>
+/plugin install vuln-hunt@vuln-hunt
+```
+
+The marketplace's source, including the tag, is recorded in your settings, and adding it again from another
+source is refused. To pin an install made from the default branch, or to move a pinned install to a later
+release, remove the marketplace first, which also uninstalls the plugin, then run the two commands above:
+
+```text
+/plugin marketplace remove vuln-hunt
+```
+
+Release tags are protected from moving, so `claude plugin update` finds nothing new for a pinned install. See
+[Marketplace sources](https://code.claude.com/docs/en/plugins/marketplace-reference#marketplace-sources) and the
+[plugin CLI reference](https://code.claude.com/docs/en/plugins/cli-reference).
+
+To check an installed copy against a release, verify the release zip with the commands in its notes, unpack
+it, and compare it with the installed copy:
+
+```bash
+diff -r --exclude=.in_use <unpacked zip> ~/.claude/plugins/cache/vuln-hunt/vuln-hunt/<version>/
+```
+
+No output means the installed files are exactly the signed release. `.in_use` is created by Claude Code and is
+not part of the release.
+
+### Update and remove
+
+```bash
+claude plugin marketplace update vuln-hunt
+claude plugin update vuln-hunt@vuln-hunt
+claude plugin uninstall vuln-hunt@vuln-hunt
 ```
 
 Plugins from third-party marketplaces do not update automatically unless you turn that on
-([Keep plugins updated](https://code.claude.com/docs/en/plugins/install#keep-plugins-updated)).
+([Keep plugins updated](https://code.claude.com/docs/en/plugins/install#keep-plugins-updated)). An install
+follows a new version only when `version` in `plugin.json` changes; a pinned install moves only as
+[Install a release](#install-a-release) describes.
 
 ### What gets installed
 
@@ -476,7 +513,7 @@ Static evidence is the default; discovery and verification never build, test or 
 | partial or promisor clone | refused |
 | object alternates | refused for strict scans and change reviews |
 | sparse checkout | refused; a scan that is not strict may accept it with `allowSparse` |
-| assume-unchanged or skip-worktree entries | the tree is not clean |
+| assume-unchanged or skip-worktree entries | the tree is not clean; refused for a range review |
 | LFS pointer placeholders | refused; a scan that is not strict may accept them with `allowLfsPointers` |
 | custom clean, smudge or process filters | worktree state `UNKNOWN_FILTERS`, never clean |
 | `info/grafts` | refused for strict scans and change reviews |
