@@ -98,10 +98,17 @@ claude plugin marketplace add developingchet/vuln-hunt
 claude plugin install vuln-hunt@vuln-hunt
 ```
 
-Run `/reload-plugins` in a session that was already open. See
-[Discover and install plugins](https://code.claude.com/docs/en/plugins/install#add-a-marketplace).
+`/plugin install vuln-hunt --marketplace developingchet/vuln-hunt` does both steps in one command in Claude
+Code 2.1.275 or later; from a shell, `claude plugin install vuln-hunt --marketplace developingchet/vuln-hunt`
+needs 2.1.292 or later. After a shell install, run `/reload-plugins` in a session that was already open. See
+[Tell users how to install](https://code.claude.com/docs/en/plugins/publish#tell-users-how-to-install) and
+[Install and manage plugins](https://code.claude.com/docs/en/plugins/install#add-a-marketplace-and-install-in-one-command).
 
-These commands install the plugin from the default branch, which can hold changes made since the last release.
+The install follows the default branch, and `claude plugin update` brings a new copy once a release raises
+`version` in `plugin.json`. Auto-update is off for this marketplace by default; to receive releases without running
+`claude plugin update`, open `/plugin`, then **Marketplaces**, select `vuln-hunt`, then **Enable auto-update**
+([Keep plugins updated](https://code.claude.com/docs/en/plugins/install#keep-plugins-updated)). To stay on one
+release instead, see [Install a release](#install-a-release).
 
 ### Install a release
 
@@ -144,10 +151,9 @@ claude plugin update vuln-hunt@vuln-hunt
 claude plugin uninstall vuln-hunt@vuln-hunt
 ```
 
-Plugins from third-party marketplaces do not update automatically unless you turn that on
-([Keep plugins updated](https://code.claude.com/docs/en/plugins/install#keep-plugins-updated)). An install
-follows a new version only when `version` in `plugin.json` changes; a pinned install moves only as
-[Install a release](#install-a-release) describes.
+`claude plugin update` installs a new copy only when `version` in `plugin.json` has changed; a pinned install
+moves only as [Install a release](#install-a-release) describes. Each command is described in the
+[plugin CLI reference](https://code.claude.com/docs/en/plugins/cli-reference).
 
 ### What gets installed
 
