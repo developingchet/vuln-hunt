@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- The attestation reads `.vuln-hunt/.gitignore` and Git's `objects/info/alternates` through the descriptor it
+  checked, so the file can no longer be swapped for a symlink between the check and the read.
+
 ## 0.0.1 - 2026-11-15
 
 First release as a Claude Code plugin.
