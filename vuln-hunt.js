@@ -407,7 +407,9 @@ async function recoverPanels(entries){
 // that rewrote the helper's output on purpose. Batches are bounded by encoded
 // size, so each command stays a few kilobytes: well inside Windows' 32,767
 // character command line and short enough for a mechanic to copy exactly.
-const CITE_VALIDATION_CAP=4096,CITE_BATCH_BYTES=6000;
+// The total is capped by count and by bytes, which bounds the number of
+// mechanic calls; citations past either cap count as unconfirmed.
+const CITE_VALIDATION_CAP=4096,CITE_BATCH_BYTES=6000,CITE_VALIDATION_BYTES=262144;
 const resultHashOk=v=>{if(!v||typeof v!=="object"||typeof v.resultHash!=="string")return false;const {resultHash,...body}=v;return sha256hex(JSON.stringify(body))===resultHash};
 const parseCiteString=s=>{const m=/^(.*):([1-9]\d*)(?:-([1-9]\d*))?$/.exec(String(s));if(!m)return null;const t={file:m[1],line:Number(m[2]),endLine:m[3]?Number(m[3]):null};return t.line<=MAX_CITE_LINE&&(t.endLine===null||t.endLine<=MAX_CITE_LINE)?t:null};
 // These two canonicalizations must stay byte-identical to canonCitations and
@@ -443,7 +445,8 @@ async function validateCitations(citeStrings,scope){
   // of it the helper never judged, so a vote that loses one is an
   // infrastructure gap rather than evidence against the finding.
   const rejected=new Set(),unconfirmed=new Set(),items=[];
-  for(const s of unique){const t=parseCiteString(s);if(t&&items.length<CITE_VALIDATION_CAP)items.push({s,t,bytes:utf8Bytes(JSON.stringify(citeEntry(t))).length+1});else{rejected.add(s);unconfirmed.add(s)}}
+  let totalBytes=0;
+  for(const s of unique){const t=parseCiteString(s),bytes=t?utf8Bytes(JSON.stringify(citeEntry(t))).length+1:0;if(t&&items.length<CITE_VALIDATION_CAP&&totalBytes+bytes<=CITE_VALIDATION_BYTES){items.push({s,t,bytes});totalBytes+=bytes}else{rejected.add(s);unconfirmed.add(s)}}
   let unvalidatedCount=rejected.size,invalidCount=0,lineChecks=0,okBatches=0;
   const batches=[];{let cur=[],size=2;for(const x of items){if(cur.length&&size+x.bytes>CITE_BATCH_BYTES){batches.push(cur);cur=[];size=2}cur.push(x);size+=x.bytes}if(cur.length)batches.push(cur)}
   const results=afterStage(await parallel(batches.map((batch,k)=>async()=>{
@@ -471,9 +474,11 @@ function rejectCitations(v,validation){
   const keep=v.citations.filter(c=>!validation.rejected.has(c)),dropped=v.citations.filter(c=>validation.rejected.has(c));
   if(!dropped.length)return;
   v.citations=keep;v.invalidCitations=[...(v.invalidCitations||[]),...dropped];
-  if(dropped.some(c=>validation.unconfirmed.has(c)))v.citationsUnconfirmed=true;
-  if(v.verdict==="TRUE_POSITIVE"&&keep.length<2){v.rawVerdict=v.rawVerdict||v.verdict;v.verdict="UNKNOWN";v.evidenceIssue="TRUE_POSITIVE citations did not pass mechanical file and line validation"}
-  else if(["FALSE_POSITIVE","PREDATES_CHANGE"].includes(v.verdict)&&!keep.length){v.rawVerdict=v.rawVerdict||v.verdict;v.verdict="UNKNOWN";v.evidenceIssue=`${v.rawVerdict} citation did not pass mechanical file and line validation`}
+  // The vote is weakened by the transport, not by evidence, when the
+  // citations the helper never judged would have kept its verdict.
+  const lost=dropped.filter(c=>validation.unconfirmed.has(c)).length;
+  if(v.verdict==="TRUE_POSITIVE"&&keep.length<2){v.rawVerdict=v.rawVerdict||v.verdict;v.verdict="UNKNOWN";v.evidenceIssue="TRUE_POSITIVE citations did not pass mechanical file and line validation";if(keep.length+lost>=2)v.citationsUnconfirmed=true}
+  else if(["FALSE_POSITIVE","PREDATES_CHANGE"].includes(v.verdict)&&!keep.length){v.rawVerdict=v.rawVerdict||v.verdict;v.verdict="UNKNOWN";v.evidenceIssue=`${v.rawVerdict} citation did not pass mechanical file and line validation`;if(lost)v.citationsUnconfirmed=true}
 }
 function applyVoteCitationValidation(entries,validation){
   if(!validation.rejected.size)return;
@@ -486,17 +491,15 @@ function applyAdjudicatorValidation(entries,validation){
   if(!validation.rejected.size)return;
   for(const e of entries)rejectCitations(e.adjudicator,validation);
 }
-// A vote that lost a citation the helper never judged was weakened by the
-// transport, not by evidence.
 const transportWeakened=e=>[...SEATS.map(s=>e.seats[s]),e.adjudicator].some(v=>v&&v.citationsUnconfirmed);
-function applyReceiptValidation(rejected){
+function applyReceiptValidation({rejected,unconfirmed}){
   if(!rejected.size)return;
   for(const [,st] of unitState){
     if(!["deep-reviewed","gap-reviewed","receipt-thin"].includes(st.status))continue;
     const dropped=(st.receipts||[]).filter(c=>rejected.has(c)),keep=(st.receipts||[]).filter(c=>!rejected.has(c));
     if(!dropped.length)continue;
     st.receipts=keep;st.invalidReceipts=(st.invalidReceipts||0)+dropped.length;
-    if(!keep.length){st.status="receipt-missing";st.reason="no receipt passed mechanical file and line validation"}
+    if(!keep.length){st.status="receipt-missing";st.reason=dropped.some(c=>unconfirmed.has(c))?"no receipt passed mechanical file and line validation, and some could not be confirmed because validation output was lost":"no receipt passed mechanical file and line validation"}
   }
 }
 // Adequacy runs before salvage and again after validation: a unit counts as
@@ -567,7 +570,7 @@ const receiptStrings=[...unitState.values()].flatMap(s=>s.receipts||[]);
 const mainVerification=await finalizeStage(mainEntries,receiptStrings,"main");
 let judged=mainVerification.judged,citationsValidation=mainVerification.validation;
 const receiptValidationStatus=mainVerification.firstPass.status;
-applyReceiptValidation(mainVerification.firstPass.rejected);
+applyReceiptValidation(mainVerification.firstPass);
 enforceReceiptAdequacy();
 let verified=judged.filter(x=>x?.verified).map(x=>x.finding);log(`verified findings: ${verified.length}/${judged.length}`);
 

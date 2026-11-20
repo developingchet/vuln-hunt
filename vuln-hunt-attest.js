@@ -150,9 +150,9 @@ function rev(ref){const s=text(git(['rev-parse','--verify',`${ref}^{commit}`]));
 // the workflow recomputes over what came back: together they catch a list or
 // result the transport dropped, reordered or garbled in either direction.
 // Neither is a signature, so a mechanic that rewrote this helper's output on
-// purpose would not be detected by them. Outputs name inputs by index and
-// carry no repository file names, so the mechanic never reads file-name text
-// back either.
+// purpose would not be detected by them. Citation validation names its
+// inputs by index and carries no repository file names, so the mechanic never
+// reads file-name text back from it either.
 // With --input-base64 the input file holds base64 of the UTF-8 JSON. The
 // workflow sends input that way so the command a mechanic copies carries no
 // quote, shell metacharacter or prose taken from repository file names.
@@ -205,22 +205,22 @@ if(validateCitationsPath){
   if(ignoreCase)for(const p of manifest){const k=p.toLowerCase();folded.set(k,folded.has(k)&&folded.get(k)!==p?null:p)}
   const special=stageSpecial(),linkSet=new Set([...special.trackedSymlinks,...special.submodules]);
   const invalid=[],fileLines=new Map();
-  const bad=(index,c,reason)=>({index,reason});
+  const bad=(index,reason)=>({index,reason});
   const countLines=fd=>{const buf=Buffer.alloc(1<<20);let n=0,bytes=0,last=-1;for(let r;(r=fs.readSync(fd,buf,0,buf.length,null))>0;){bytes+=r;last=buf[r-1];for(let i=0;i<r;i++)if(buf[i]===10)n++}return bytes===0?0:last===10?n:n+1};
   input.forEach((c,index)=>{
-    if(!safeRel(c.file)){invalid.push(bad(index,c,'path is absolute, backslashed, or contains .. or a control character'));return}
+    if(!safeRel(c.file)){invalid.push(bad(index,'path is absolute, backslashed, or contains .. or a control character'));return}
     let target=manifestSet.has(c.file)?c.file:undefined;
-    if(target===undefined&&ignoreCase){const hit=folded.get(c.file.toLowerCase());if(hit===null){invalid.push(bad(index,c,'ambiguous letter case: several manifest paths match'));return}target=hit}
-    if(target===undefined){invalid.push(bad(index,c,'not in the live manifest'));return}
-    if(linkSet.has(target)){invalid.push(bad(index,c,'not a regular file (symlink, submodule or directory)'));return}
+    if(target===undefined&&ignoreCase){const hit=folded.get(c.file.toLowerCase());if(hit===null){invalid.push(bad(index,'ambiguous letter case: several manifest paths match'));return}target=hit}
+    if(target===undefined){invalid.push(bad(index,'not in the live manifest'));return}
+    if(linkSet.has(target)){invalid.push(bad(index,'not a regular file (symlink, submodule or directory)'));return}
     if(!fileLines.has(target)){
       let lines=null,reason=null,fd=null;
       try{fd=openRepoFile(target);lines=countLines(fd)}catch(e){reason=openFailure(e)||'unreadable'}finally{if(fd!==null)fs.closeSync(fd)}
       fileLines.set(target,{lines,reason});
     }
     const {lines,reason}=fileLines.get(target);
-    if(lines===null){invalid.push(bad(index,c,reason));return}
-    if(lines===0||c.line>lines||(c.endLine!=null&&c.endLine>lines))invalid.push(bad(index,c,`line beyond the file's ${lines} line(s)`));
+    if(lines===null){invalid.push(bad(index,reason));return}
+    if(lines===0||c.line>lines||(c.endLine!=null&&c.endLine>lines))invalid.push(bad(index,`line beyond the file's ${lines} line(s)`));
   });
   emitWithHash({version:3,inputHash:crypto.createHash('sha256').update(canonCitations(input)).digest('hex'),total:input.length,invalidCount:invalid.length,invalid,lineChecks:[...fileLines.values()].filter(x=>x.lines!==null).length});process.exit(0);
 }

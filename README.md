@@ -540,15 +540,17 @@ output; the workflow recomputes both, which detects a garbled or truncated trans
 is a signature, and a mechanic that rewrote the helper's output on purpose would not be detected by them.
 
 Validation fails closed: a citation the helper rejected, and every citation it did not confirm (its batch did not
-come back intact, it was past the 4096 cap, or it could not be parsed), is dropped from its vote and its receipt.
+come back intact, it was past the cap of 4096 citations or 256 KiB, or it could not be parsed), is dropped from its
+vote and its receipt.
 Each batch stands alone, so one lost batch leaves the others' citations in place. A finding whose votes lost only
-citations the helper rejected is `UNRESOLVED_EVIDENCE` when the panel can no longer decide; one whose votes lost
-citations the helper never judged is `UNRESOLVED_INFRASTRUCTURE`, since the gap is in the transport rather than in
-the evidence. The result's `coverage.citationsValidated` reports the outcome: `not-needed` (the scan produced no
+citations the helper rejected is `UNRESOLVED_EVIDENCE` when the panel can no longer decide; one where a vote lost
+its verdict only because citations the helper never judged were dropped is `UNRESOLVED_INFRASTRUCTURE`, since the
+gap is in the transport rather than in the evidence. The result's `coverage.citationsValidated` reports the outcome: `not-needed` (the scan produced no
 citations), `validated`, `partial` (some citations could not be confirmed and were dropped),
 `transport-failed` (none could be confirmed, so no finding verifies and reached units lose their receipts), or
-`unavailable-no-attestation`. Each `coverage.jsonl` row carries the same status as `citationValidationStatus`
-and a boolean `citationsValidated` that is true only for `validated` and `not-needed`. After `partial` or
+`unavailable-no-attestation`; it merges every validation pass. Each `coverage.jsonl` row carries, as
+`citationValidationStatus`, the status of the pass that validated receipts (researcher and panel citations), and
+a boolean `citationsValidated` that is true only when that status is `validated` or `not-needed`. After `partial` or
 `transport-failed`, rerun the scan before trusting its unresolved counts.
 
 `deep-reviewed` and `gap-reviewed` remain the researcher's own accounting for which files were read; mechanical
@@ -573,7 +575,7 @@ A candidate's final disposition is one of:
 | `REJECTED` | two decisive false-positive votes, or a full panel with two or more |
 | `PREDATES_CHANGE` | a change review where the flaw predates the reviewed change |
 | `UNRESOLVED_EVIDENCE` | the panel completed but the evidence did not settle the question |
-| `UNRESOLVED_INFRASTRUCTURE` | one or more votes, or the adjudicator's vote, never returned, even after a bounded recovery pass |
+| `UNRESOLVED_INFRASTRUCTURE` | one or more votes, or the adjudicator's vote, never returned, even after a bounded recovery pass; or a vote lost its verdict because citation validation output was lost |
 | `NOT_REACHED` | the candidate's panel task itself failed or returned nothing |
 
 A vote that returns nothing is asked once more immediately and once more in a recovery pass that retries only the
