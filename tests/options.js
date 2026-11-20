@@ -101,6 +101,9 @@ function resolveTests(){
   ]){const x=args(raw);check(name,!x.ok&&x.args===null&&x.errors.some(e=>pattern.test(e)),()=>JSON.stringify(x.errors))}
   r=args('please run a deep scan with variants');
   check('resolve-reports-the-words-of-a-sentence',!r.ok&&same(r.unrecognized,['run','a','scan','with']),()=>JSON.stringify(r));
+  r=args('tag="a\\\\|b|c"');
+  const row=r.ok&&r.table.split('\n').find(l=>l.startsWith('| tag |'));
+  check('resolve-table-escapes-backslashes-and-pipes',r.ok&&r.args.tag==='a\\|b|c'&&row==='| tag | "a\\\\\\\\\\|b\\|c" | given |',()=>`${JSON.stringify(r.args)} ${row}`);
   r=args('help');
   check('resolve-recognizes-help',r.help===true);
   r=args('{"tag":null,"policyDocs":null}');

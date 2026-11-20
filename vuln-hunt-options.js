@@ -211,7 +211,9 @@ function finish({errors,unrecognized=[],preset=null,help=false,given={},effectiv
   return{version:1,ok,help,errors,unrecognized,preset,range,args,emitRunArgs,table};
 }
 
-const cell=s=>String(s).replace(/\|/g,'\\|').replace(/[\r\n]+/g,' ');
+// A Markdown table cell: backslashes first, so an escaped pipe cannot be
+// unescaped by a backslash before it.
+const cell=s=>String(s).replace(/\\/g,'\\\\').replace(/\|/g,'\\|').replace(/[\r\n]+/g,' ');
 function optionsTable(){
   return['| Option | Values | Default | Effect |','|---|---|---|---|',...OPTIONS.map(o=>`| \`${o.name}\` | ${o.values} | ${o.def} | ${o.effect} |`)].join('\n');
 }
