@@ -36,6 +36,19 @@ if(range){if(!rangeRe.test(range))throw new Error('range contains unsupported ch
 // one directory reached through two spellings compares equal.
 function real(p){try{return fs.realpathSync.native(p)}catch(e){if(e&&['ENOENT','ENOTDIR','ELOOP'].includes(e.code))throw e;return fs.realpathSync(p)}}
 function inside(base,target){const r=path.relative(base,target);return r===''||(!r.startsWith(`..${path.sep}`)&&r!=='..'&&!path.isAbsolute(r))}
+// Opens a path once and checks and reads it through that descriptor, so the
+// file inspected is the file read. O_NOFOLLOW refuses a final symlink where
+// the platform has it; elsewhere the path must still name the opened file
+// afterwards. kind is missing, other (a link, directory or replaced file) or file.
+function readRegularFile(p){
+  let fd;try{fd=fs.openSync(p,fs.constants.O_RDONLY|(fs.constants.O_NOFOLLOW||0))}catch(e){if(e&&e.code==='ENOENT')return{kind:'missing'};if(e&&['ELOOP','EMLINK','EISDIR'].includes(e.code))return{kind:'other'};throw e}
+  try{
+    const st=fs.fstatSync(fd);if(!st.isFile())return{kind:'other'};
+    let ls;try{ls=fs.lstatSync(p)}catch(e){if(e&&e.code==='ENOENT')return{kind:'other'};throw e}
+    if(ls.isSymbolicLink()||ls.ino!==st.ino||ls.dev!==st.dev)return{kind:'other'};
+    return{kind:'file',text:fs.readFileSync(fd,'utf8')};
+  }finally{fs.closeSync(fd)}
+}
 // Executables are resolved before Git can name the top level, so every
 // ancestor holding a .git entry bounds repository-controlled content. A
 // linked worktree nested in its main checkout (.claude/worktrees/x) has two
@@ -127,7 +140,7 @@ function agentShadows(){
 }
 const shadows=agentShadows();if(shadows.length)throw new Error(`project agent shadows a vuln-hunt worker: ${shadows.join(', ')}. Remove or rename it before scanning`);
 const dec=new TextDecoder('utf-8',{fatal:true});
-const outputIgnorePath=path.join(cwd,'.vuln-hunt','.gitignore');try{const st=fs.lstatSync(outputIgnorePath);if(st.isFile()){const raw=fs.readFileSync(outputIgnorePath,'utf8');if(raw==='runs/'||raw==='runs/\n'||raw==='runs/\r\n')throw new Error('.vuln-hunt/.gitignore contains runs/ and would let tool output into the manifest; replace its contents with *')}}catch(e){if(e&&e.code!=='ENOENT')throw e}
+{const f=readRegularFile(path.join(cwd,'.vuln-hunt','.gitignore'));if(f.kind==='file'&&(f.text==='runs/'||f.text==='runs/\n'||f.text==='runs/\r\n'))throw new Error('.vuln-hunt/.gitignore contains runs/ and would let tool output into the manifest; replace its contents with *')}
 function zlist(b){const out=[];let start=0;for(let i=0;i<b.length;i++)if(b[i]===0){try{out.push(dec.decode(b.subarray(start,i)))}catch{throw new Error('repository contains a non-UTF-8 pathname; unsupported for safe workflow citation')}start=i+1}if(start!==b.length)throw new Error('expected NUL-terminated Git output');return out}
 const hash=b=>text(git(['hash-object','--no-filters','--stdin'],{input:b}));
 // Untracked OS, editor and Claude Code metadata never enters the manifest.
@@ -370,7 +383,7 @@ function isPartialClone(){
   return rem.stdout.toString('utf8').split(/\r?\n/).some(line=>{const m=/^(\S+)\s+(.*)$/.exec(line);if(!m)return false;const k=m[1].toLowerCase(),v=m[2].trim().toLowerCase();return k.endsWith('.partialclonefilter')||(k.endsWith('.promisor')&&['true','yes','on','1'].includes(v))});
 }
 function hasGrafts(){const gp=text(git(['rev-parse','--git-path','info/grafts'])),p=path.isAbsolute(gp)?gp:path.resolve(cwd,gp);try{fs.lstatSync(p);return true}catch(e){if(e&&e.code==='ENOENT')return false;throw e}}
-function hasAlternates(){const ap=text(git(['rev-parse','--git-path','objects/info/alternates'])),p=path.isAbsolute(ap)?ap:path.resolve(cwd,ap);try{const st=fs.lstatSync(p);if(st.isSymbolicLink()||!st.isFile())return true;return fs.readFileSync(p,'utf8').split(/\r?\n/).some(x=>x.trim().length>0)}catch(e){if(e&&e.code==='ENOENT')return false;throw e}}
+function hasAlternates(){const ap=text(git(['rev-parse','--git-path','objects/info/alternates'])),p=path.isAbsolute(ap)?ap:path.resolve(cwd,ap);const f=readRegularFile(p);if(f.kind==='missing')return false;if(f.kind!=='file')return true;return f.text.split(/\r?\n/).some(x=>x.trim().length>0)}
 function isOutputSafe(runId,tracked,ignoreCase){
   const fold=p=>ignoreCase?p.toLowerCase():p;
   if([...tracked].some(p=>fold(p)==='.vuln-hunt'||fold(p).startsWith('.vuln-hunt/')))return false;

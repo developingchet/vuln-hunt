@@ -62,6 +62,8 @@ Reliability and evidence-integrity release.
   and the helper, closing a reserved-path escape and Windows path aliasing.
 - Policy documents are read through the same checked descriptor as citations, refusing a symlink or junction on
   every platform, and an attested document the run does not name in `policyDocs` is reported as inactive.
+- The attestation reads `.vuln-hunt/.gitignore` and Git's `objects/info/alternates` through the descriptor it
+  checked, so the file can no longer be swapped for a symlink between the check and the read.
 
 ## 0.0.1 - 2026-11-15
 
