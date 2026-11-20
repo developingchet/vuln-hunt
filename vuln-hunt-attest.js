@@ -36,15 +36,25 @@ if(range){if(!rangeRe.test(range))throw new Error('range contains unsupported ch
 // one directory reached through two spellings compares equal.
 function real(p){try{return fs.realpathSync.native(p)}catch(e){if(e&&['ENOENT','ENOTDIR','ELOOP'].includes(e.code))throw e;return fs.realpathSync(p)}}
 function inside(base,target){const r=path.relative(base,target);return r===''||(!r.startsWith(`..${path.sep}`)&&r!=='..'&&!path.isAbsolute(r))}
+// Files that must be regular are opened before they are checked, then
+// checked through the descriptor and confirmed with lstat. On POSIX,
+// O_NOFOLLOW refuses a final symlink at the open, O_NONBLOCK keeps a FIFO from
+// blocking it and O_NOCTTY keeps a terminal from becoming the controlling
+// one; the errno values below are how platforms report such a refusal.
+// Windows has no O_NOFOLLOW, so a final symlink or junction is detected with
+// readlink, which reads the link itself, before the open: opening it would
+// reach its target, which may be a network share or a named pipe.
+const OPEN_REGULAR=process.platform==='win32'?'r':(fs.constants.O_RDONLY|fs.constants.O_NOFOLLOW|fs.constants.O_NONBLOCK|(fs.constants.O_NOCTTY||0));
+const NOT_REGULAR_CODES=['ELOOP','EMLINK','EISDIR','ENXIO'];
+function isWindowsLink(p){if(process.platform!=='win32')return false;try{fs.readlinkSync(p);return true}catch(e){if(e&&e.code==='ENOENT')throw e;return false}}
 // Opens a path once and checks and reads it through that descriptor, so the
-// file inspected is the file read. O_NOFOLLOW refuses a final symlink where
-// the platform has it; elsewhere the path must still name the opened file
+// file inspected is the file read; the path must still name the opened file
 // afterwards. kind is missing, other (a link, directory or replaced file) or file.
 function readRegularFile(p){
-  let fd;try{fd=fs.openSync(p,fs.constants.O_RDONLY|(fs.constants.O_NOFOLLOW||0))}catch(e){if(e&&e.code==='ENOENT')return{kind:'missing'};if(e&&['ELOOP','EMLINK','EISDIR'].includes(e.code))return{kind:'other'};throw e}
+  let fd;try{if(isWindowsLink(p))return{kind:'other'};fd=fs.openSync(p,OPEN_REGULAR)}catch(e){if(e&&e.code==='ENOENT')return{kind:'missing'};if(e&&NOT_REGULAR_CODES.includes(e.code))return{kind:'other'};throw e}
   try{
-    const st=fs.fstatSync(fd);if(!st.isFile())return{kind:'other'};
-    let ls;try{ls=fs.lstatSync(p)}catch(e){if(e&&e.code==='ENOENT')return{kind:'other'};throw e}
+    const st=fs.fstatSync(fd,{bigint:true});if(!st.isFile())return{kind:'other'};
+    let ls;try{ls=fs.lstatSync(p,{bigint:true})}catch(e){if(e&&e.code==='ENOENT')return{kind:'other'};throw e}
     if(ls.isSymbolicLink()||ls.ino!==st.ino||ls.dev!==st.dev)return{kind:'other'};
     return{kind:'file',text:fs.readFileSync(fd,'utf8')};
   }finally{fs.closeSync(fd)}
@@ -179,22 +189,22 @@ function readJsonArg(p,what){
   try{return JSON.parse(raw)}catch{throw new Error(`${what} is not valid JSON: ${p}`)}
 }
 // Repository-controlled files are read through one descriptor. Every parent
-// directory is checked with lstat first; the file itself is opened, checked
-// through the descriptor with fstat, and then confirmed with lstat to be what
-// the path names: not a symlink or junction, and the same device and inode as
-// the descriptor, so a swap of the final component around the open is
-// detected (Node reports other Windows reparse points, such as cloud-file
-// placeholders, as ordinary files). O_NOFOLLOW refuses a final symlink at the
-// open on POSIX, and O_NONBLOCK keeps a FIFO from blocking it. A concurrent writer that replaces a
-// parent directory after its check is beyond what Node's path-based API can
-// stop; the workflow's closing freshness check reports source that changed
-// during the run.
+// directory is checked with lstat first; the file itself is opened as
+// readRegularFile opens it, checked through the descriptor with fstat, and
+// then confirmed with lstat to be what the path names: not a symlink or
+// junction, and the same device and inode as the descriptor, so a swap of the
+// final component around the open is detected (Node reports other Windows
+// reparse points, such as cloud-file placeholders, as ordinary files). A
+// concurrent writer that replaces a parent directory after its check is
+// beyond what Node's path-based API can stop; the workflow's closing
+// freshness check reports source that changed during the run.
 const notRegularError=m=>Object.assign(new Error(m),{code:'VH_NOT_REGULAR'});
 function openRepoFile(rel){
   const parts=rel.split('/');let dir=cwd;
   for(const seg of parts.slice(0,-1)){dir=path.join(dir,seg);const s=fs.lstatSync(dir);if(s.isSymbolicLink()||!s.isDirectory())throw notRegularError('path crosses a symlink, junction or non-directory')}
   const abs=path.join(cwd,...parts),notRegular='not a regular file (symlink, submodule or directory)';
-  const fd=fs.openSync(abs,process.platform==='win32'?'r':(fs.constants.O_RDONLY|fs.constants.O_NOFOLLOW|fs.constants.O_NONBLOCK));
+  if(isWindowsLink(abs))throw notRegularError(notRegular);
+  const fd=fs.openSync(abs,OPEN_REGULAR);
   try{
     const st=fs.fstatSync(fd,{bigint:true});if(!st.isFile())throw notRegularError(notRegular);
     const now=fs.lstatSync(abs,{bigint:true});if(now.isSymbolicLink()||!now.isFile())throw notRegularError(notRegular);
@@ -207,7 +217,7 @@ const emitWithHash=o=>emit({...o,resultHash:crypto.createHash('sha256').update(J
 // is larger, so no caller reads an unbounded file.
 function readBounded(fd,cap){const size=Number(fs.fstatSync(fd).size);if(size>cap)return null;const buf=Buffer.alloc(size);let off=0;while(off<size){const k=fs.readSync(fd,buf,off,size-off,off);if(!k)break;off+=k}return buf.subarray(0,off)}
 const loneSurrogate=/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/;
-const openFailure=e=>e&&e.code==='VH_NOT_REGULAR'?e.message:e&&['ELOOP','EISDIR'].includes(e.code)?'not a regular file (symlink, submodule or directory)':e&&['ENOENT','ENOTDIR'].includes(e.code)?'missing from the working tree':null;
+const openFailure=e=>e&&e.code==='VH_NOT_REGULAR'?e.message:e&&NOT_REGULAR_CODES.includes(e.code)?'not a regular file (symlink, submodule or directory)':e&&['ENOENT','ENOTDIR'].includes(e.code)?'missing from the working tree':null;
 const MAX_LINE=10000000,SEVERITIES=['critical','high','medium','low'],EVIDENCE_LEVELS=['STATICALLY_VERIFIED','EXECUTION_REPRODUCED'],RELATIONS=['REPRODUCED_AGAIN','TENTATIVE_MATCH','NEW','UNKNOWN'];
 const canonCitations=cs=>JSON.stringify((Array.isArray(cs)?cs:[]).map(c=>c&&typeof c==='object'?[String(c.file),Number(c.line),c.endLine==null?null:Number(c.endLine)]:null));
 if(validateCitationsPath){
