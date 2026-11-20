@@ -44,7 +44,7 @@ const OPTIONS=[
   {name:'containment',kind:'enum',choices:CONTAINMENTS,values:'`"sandbox-runtime"`, `"container"`, `"vm"`, `"cloud-session"`',def:'none',effect:'The externally enforced containment of the whole session, which dynamic mode requires; see [Isolation](#isolation).'},
   {name:'network',kind:'boolean',values:'`true`, `false`',def:'none',effect:'Whether the session can reach the network; dynamic mode requires `false`.'},
   {name:'credentials',kind:'boolean',values:'`true`, `false`',def:'none',effect:'Whether the session holds credentials; dynamic mode requires `false`.'},
-  {name:'reproEnvironment',kind:'object',nullable:true,values:'object, see [Reproduction environment](#reproduction-environment)',def:'none',effect:'A typed descriptor of the pre-built execution environment, so dynamic scans need no hand-edited workflow script. Its fields are checked by the workflow.'},
+  {name:'reproEnvironment',kind:'repro',nullable:true,values:'object, see [Reproduction environment](#reproduction-environment)',def:'none',effect:'A typed descriptor of the pre-built execution environment, so dynamic scans need no hand-edited workflow script.'},
   {name:'reproMinSeverity',kind:'enum',choices:['critical','high','medium','low'],values:'`"critical"`, `"high"`, `"medium"`, `"low"`',def:'none',effect:'Reproduce only verified findings at or above this severity, by the verifiers\' own severity opinions.'},
   {name:'models',kind:'stageMap',values:'per-stage map',def:'see below',effect:'Model per stage.'},
   {name:'efforts',kind:'stageMap',values:'per-stage map',def:'see below',effect:'Effort per stage.'},
@@ -61,12 +61,31 @@ const PRESETS={
 const BY_NAME=new Map(OPTIONS.map(o=>[o.name,o]));
 const BY_LOWER=new Map(OPTIONS.map(o=>[o.name.toLowerCase(),o]));
 const MAX_ARGS_LENGTH=65536;
+// How reproEnvironment.<field>=<text> is parsed; the checks are the
+// workflow's own (reproEnvError mirrors reproEnvSchema in vuln-hunt.js).
+const REPRO_FIELDS={backend:'string',image:'string',sourceLocation:'string',workingDirectory:'string',artifactsDir:'string',instructions:'string',runtimeCapabilities:'list',testEntrypoints:'entrypoints',verifiedReady:'boolean',timeoutMs:'integer',resourceLimits:'json'};
 
 const has=(o,k)=>Object.prototype.hasOwnProperty.call(o,k);
 const isObj=x=>x!==null&&typeof x==='object'&&!Array.isArray(x);
 const rangeOk=r=>{if(typeof r!=='string'||!RANGE_RE.test(r))return false;const m=/^(.*?)(\.{2,3})(.*)$/s.exec(r);return !m||(Boolean(m[1])&&Boolean(m[3])&&!m[3].startsWith('.')&&!m[3].includes('..'))};
 // Mirrors safePathLength in vuln-hunt.js.
 const docPathOk=p=>typeof p==='string'&&p.length>0&&p.length<=4096&&!p.includes('\\')&&!/[\0\r\n]/.test(p)&&!/^([\\/]|[A-Za-z]:[\\/])/.test(p)&&!p.split('/').includes('..');
+const location=v=>typeof v==='string'&&v.length>0&&v.length<=512&&!/[\0\r\n]/.test(v);
+
+function reproEnvError(x){
+  const set=k=>has(x,k)&&x[k]!==null;
+  if(!isObj(x))return'reproEnvironment must be an object describing the pre-built execution environment';
+  if(!['container','vm'].includes(x.backend))return'reproEnvironment.backend must be "container" or "vm"';
+  if(x.backend==='container'&&!(typeof x.image==='string'&&/^[\S]{1,512}$/.test(x.image)))return'reproEnvironment.image must be an immutable image identifier (digest or tag), 1-512 characters';
+  for(const k of ['sourceLocation','workingDirectory','artifactsDir'])if(set(k)&&!location(x[k]))return`reproEnvironment.${k} must be a 1-512 character location string without control characters`;
+  if(set('runtimeCapabilities')&&(!Array.isArray(x.runtimeCapabilities)||x.runtimeCapabilities.length>8||!x.runtimeCapabilities.every(v=>typeof v==='string'&&v.length>0&&v.length<=64)))return'reproEnvironment.runtimeCapabilities must be an array of at most 8 short runtime names';
+  if(set('testEntrypoints')&&(!Array.isArray(x.testEntrypoints)||x.testEntrypoints.length>8||!x.testEntrypoints.every(location)))return'reproEnvironment.testEntrypoints must be an array of at most 8 command strings without control characters';
+  if(set('instructions')&&!(typeof x.instructions==='string'&&x.instructions.length>0&&x.instructions.length<=4000))return'reproEnvironment.instructions must be a string of at most 4000 characters';
+  if(set('verifiedReady')&&typeof x.verifiedReady!=='boolean')return'reproEnvironment.verifiedReady must be true or false';
+  if(set('timeoutMs')&&!(Number.isInteger(x.timeoutMs)&&x.timeoutMs>=1000&&x.timeoutMs<=3600000))return'reproEnvironment.timeoutMs must be an integer between 1000 and 3600000';
+  if(set('resourceLimits')){const r=x.resourceLimits;if(!isObj(r))return'reproEnvironment.resourceLimits must be an object';for(const k of ['cpu','memory','pids'])if(has(r,k)&&r[k]!==null&&!(typeof r[k]==='string'&&r[k].length>0&&r[k].length<=64))return`reproEnvironment.resourceLimits.${k} must be a short string`}
+  return null;
+}
 
 // Returns null when value is acceptable for opt, otherwise the reason.
 function checkValue(opt,value){
@@ -88,21 +107,23 @@ function checkValue(opt,value){
       const bad=Object.keys(value).filter(s=>!STAGES.includes(s)||typeof value[s]!=='string'||!value[s]);
       return bad.length?`${opt.name} has unknown stages or empty values: ${bad.join(', ')}; stages are ${STAGES.join(', ')}`:null;
     }
+    case 'repro':return reproEnvError(value);
     case 'object':return isObj(value)?null:`${opt.name} must be an object`;
     default:return`${opt.name} has no known kind`;
   }
 }
 
-// Splits the argument text at whitespace outside quotes and outside JSON
-// brackets, so a JSON object or a quoted value with spaces stays one token.
-// Outside JSON a quote opens only at the start of a token or a value, so an
-// apostrophe inside a word is an ordinary character.
+// Splits the argument text at whitespace outside quotes and outside JSON, so
+// a JSON object or a quoted value with spaces stays one token. Quotes and
+// brackets open only at the start of a token or of a value, so an apostrophe
+// or a brace inside a word (it's, HEAD@{1}) is an ordinary character.
 function tokenize(raw){
   const tokens=[];let cur='',depth=0,quote=null,esc=false;
+  const opening=()=>depth>0||cur===''||cur.endsWith('=');
   for(const ch of raw){
     if(quote){cur+=ch;if(quote==='"'&&esc)esc=false;else if(quote==='"'&&ch==='\\')esc=true;else if(ch===quote)quote=null;continue}
-    if(depth>0?ch==='"':(ch==='"'||ch==='\'')&&(cur===''||cur.endsWith('='))){quote=ch;cur+=ch;continue}
-    if(ch==='{'||ch==='['){depth++;cur+=ch;continue}
+    if((ch==='"'||(ch==='\''&&depth===0))&&opening()){quote=ch;cur+=ch;continue}
+    if((ch==='{'||ch==='[')&&opening()){depth++;cur+=ch;continue}
     if((ch==='}'||ch===']')&&depth>0){depth--;cur+=ch;continue}
     if(/\s/.test(ch)&&depth===0){if(cur){tokens.push(cur);cur=''}continue}
     cur+=ch;
@@ -118,88 +139,127 @@ const unquote=t=>{
   return{value:t};
 };
 const BOOLEAN_WORDS={true:true,yes:true,on:true,1:true,false:false,no:false,off:false,0:false};
+const parseBoolean=(name,s)=>{const k=s.toLowerCase();return has(BOOLEAN_WORDS,k)?{value:BOOLEAN_WORDS[k]}:{error:`${name} must be true or false`}};
+const parseJson=(name,text)=>{try{return{value:JSON.parse(text)}}catch{return{error:`${name}: the value is not valid JSON`}}};
 
 // Parses the text after key= for opt. A value that starts with { or [ is JSON.
 function parseText(opt,text){
-  if(/^[{[]/.test(text)){try{return{value:JSON.parse(text)}}catch{return{error:`${opt.name}: the value is not valid JSON`}}}
+  if(/^[{[]/.test(text))return parseJson(opt.name,text);
   const u=unquote(text);if(u.error)return{error:`${opt.name}: ${u.error}`};
   const s=u.value;
   switch(opt.kind){
-    case 'boolean':{const k=s.toLowerCase();return has(BOOLEAN_WORDS,k)?{value:BOOLEAN_WORDS[k]}:{error:`${opt.name} must be true or false`}}
+    case 'boolean':return parseBoolean(opt.name,s);
     case 'integer':return (opt.also||[]).includes(s.toLowerCase())?{value:s.toLowerCase()}:/^\d{1,9}$/.test(s)?{value:Number(s)}:{error:checkValue(opt,s)};
     case 'enum':{const c=opt.choices.find(x=>x.toLowerCase()===s.toLowerCase());return c?{value:c}:{error:checkValue(opt,s)}}
     case 'paths':return{value:s.split(',').map(x=>x.trim()).filter(Boolean)};
-    case 'stageMap':case 'object':return{error:`${opt.name} takes a JSON object, or one field at a time as ${opt.name}.<field>=<value>`};
+    case 'stageMap':case 'repro':case 'object':return{error:`${opt.name} takes a JSON object, or one field at a time as ${opt.name}.<field>=<value>`};
     default:return{value:s};
   }
 }
-// A field set as name.field=value: a stage map takes a string, and an object
-// field takes JSON when the text parses as JSON, otherwise the text itself.
-function parseField(opt,text){
-  if(opt.kind==='stageMap'){const u=unquote(text);return u.error?{error:`${opt.name}: ${u.error}`}:{value:u.value}}
-  if(text.startsWith('\'')){const u=unquote(text);return u.error?{error:`${opt.name}: ${u.error}`}:{value:u.value}}
-  try{return{value:JSON.parse(text)}}catch{return{value:text}}
+// Parses the text after name.field= : a stage takes a model or effort name,
+// and a reproEnvironment field is parsed by its own type.
+function parseField(opt,field,text){
+  const u=/^[{[]/.test(text)?parseJson(`${opt.name}.${field}`,text):unquote(text);
+  if(u.error)return{error:`${opt.name}.${field}: ${u.error}`};
+  if(opt.kind==='stageMap'||/^[{[]/.test(text))return u;
+  const kind=REPRO_FIELDS[field],s=u.value;
+  if(!kind)return{error:`reproEnvironment has no field ${JSON.stringify(field)}; fields are ${Object.keys(REPRO_FIELDS).join(', ')}`};
+  switch(kind){
+    case 'boolean':return parseBoolean(`${opt.name}.${field}`,s);
+    case 'integer':return /^\d{1,9}$/.test(s)?{value:Number(s)}:{error:`${opt.name}.${field} must be a whole number`};
+    case 'list':return{value:s.split(',').map(x=>x.trim()).filter(Boolean)};
+    case 'entrypoints':return{value:[s]};
+    case 'json':return{error:`${opt.name}.${field} takes a JSON object`};
+    default:return{value:s};
+  }
+}
+
+// Edit distance, for suggesting the option or preset a misspelt word meant.
+function distance(a,b){
+  let prev=Array.from({length:b.length+1},(_,j)=>j);
+  for(let i=1;i<=a.length;i++){const row=[i];for(let j=1;j<=b.length;j++)row[j]=Math.min(prev[j]+1,row[j-1]+1,prev[j-1]+(a[i-1]===b[j-1]?0:1));prev=row}
+  return prev[b.length];
+}
+const WORDS=[...OPTIONS.map(o=>o.name),...Object.keys(PRESETS)];
+const nearest=t=>{const w=t.toLowerCase().replace(/^(?:--)?(?:no-)?/,'');if(w.length<4)return null;const best=WORDS.map(x=>[x,distance(w,x.toLowerCase())]).sort((a,b)=>a[1]-b[1])[0];return best&&best[1]>0&&best[1]<=2?best[0]:null};
+
+// One resolution in progress: what the arguments set, and what was wrong.
+function newState(){return{errors:[],unrecognized:[],given:Object.create(null),preset:null,help:false}}
+function setGiven(st,opt,value){
+  if(opt.scan===false){st.errors.push(`${opt.name} cannot be set here: ${opt.scanNote}`);return}
+  if(has(st.given,opt.name)){
+    const cur=st.given[opt.name],mergeable=['stageMap','repro'].includes(opt.kind)&&isObj(cur)&&isObj(value);
+    const clash=mergeable?Object.keys(value).find(k=>has(cur,k)):null;
+    if(!mergeable||clash){st.errors.push(`${opt.name}${clash?`.${clash}`:''} is given more than once`);return}
+    st.given[opt.name]={...cur,...value};return;
+  }
+  st.given[opt.name]=value;
+}
+function setField(st,opt,field,value){
+  if(!['stageMap','repro'].includes(opt.kind)){st.errors.push(`${opt.name} has no fields; set it as ${opt.name}=<value>`);return}
+  setGiven(st,opt,{[field]:value});
+}
+function setPreset(st,name){
+  const k=String(name).toLowerCase();
+  if(!has(PRESETS,k)){st.errors.push(`unknown preset ${JSON.stringify(String(name))}; presets are ${Object.keys(PRESETS).join(', ')}`);return}
+  if(st.preset!==null&&st.preset!==k){st.errors.push(`only one preset can be given, not both ${st.preset} and ${k}`);return}
+  st.preset=k;
+}
+function unrecognized(st,t,why){st.unrecognized.push(t);const near=nearest(t);st.errors.push(`unrecognized argument ${JSON.stringify(t)}${why?`: ${why}`:near?`; did you mean ${near}?`:''}`)}
+
+function applyJson(st,t){
+  let o;try{o=JSON.parse(t)}catch{st.errors.push('the JSON options object is not valid JSON');return}
+  if(!isObj(o)){st.errors.push('the JSON options must be one object');return}
+  for(const k of Object.keys(o)){
+    if(k.toLowerCase()==='preset'){setPreset(st,o[k]);continue}
+    const opt=BY_LOWER.get(k.toLowerCase());if(!opt){st.errors.push(`unknown option ${JSON.stringify(k)}`);continue}
+    setGiven(st,opt,o[k]);
+  }
+}
+function applyKeyValue(st,key,field,text){
+  if(key.toLowerCase()==='preset'&&!field){setPreset(st,unquote(text).value??text);return}
+  const opt=BY_LOWER.get(key.toLowerCase());if(!opt){const near=nearest(key);st.errors.push(`unknown option ${JSON.stringify(key)}${near?`; did you mean ${near}?`:''}`);return}
+  if(field&&!['stageMap','repro'].includes(opt.kind)){st.errors.push(`${opt.name} has no fields; set it as ${opt.name}=<value>`);return}
+  const r=field?parseField(opt,field,text):parseText(opt,text);
+  if(r.error){st.errors.push(r.error);return}
+  if(field)setField(st,opt,field,r.value);else setGiven(st,opt,r.value);
+}
+// A bare word: help, a preset, a true/false option (no- turns it off), or a
+// range. A bare ref is a range only as the first argument or when it names
+// two ends, so the words of a sentence are reported rather than taken as refs.
+function applyWord(st,t,i,tokens){
+  if(/^(?:help|--help|-h|\?)$/i.test(t)){st.help=true;return}
+  if(has(PRESETS,t.toLowerCase())){setPreset(st,t);return}
+  const flag=/^(?:--)?(no-)?([A-Za-z][A-Za-z0-9]*)$/i.exec(t),flagOpt=flag&&BY_LOWER.get(flag[2].toLowerCase());
+  if(flagOpt&&flagOpt.kind==='boolean'){setGiven(st,flagOpt,!flag[1]);return}
+  const next=tokens[i+1]&&BY_LOWER.get(tokens[i+1].toLowerCase());
+  if(/^(?:no|not|without)$/i.test(t)&&next&&next.kind==='boolean'){unrecognized(st,t,`write no-${next.name} to turn ${next.name} off`);return}
+  if(!rangeOk(t)){unrecognized(st,t);return}
+  if(has(st.given,'range')){unrecognized(st,t,'a range is already given');return}
+  if(i===0&&!t.includes('..')&&nearest(t)){unrecognized(st,t);return}
+  if(i===0||t.includes('..')){setGiven(st,BY_NAME.get('range'),t);return}
+  unrecognized(st,t,`a single ref is read as a range only as the first argument; write range=${t} anywhere else`);
 }
 
 function resolve(raw){
-  const errors=[],unrecognized=[],given=Object.create(null);let preset=null,help=false;
-  if(typeof raw!=='string'||raw.length>MAX_ARGS_LENGTH)return finish({errors:[`the arguments must be text of at most ${MAX_ARGS_LENGTH} characters`]});
-  const {tokens,error}=tokenize(raw.trim());if(error)errors.push(error);
-  const setGiven=(opt,value)=>{
-    if(opt.scan===false){errors.push(`${opt.name} cannot be set here: ${opt.scanNote}`);return}
-    if(has(given,opt.name)){errors.push(`${opt.name} is given more than once`);return}
-    given[opt.name]=value;
-  };
-  const setField=(opt,field,value)=>{
-    if(!['stageMap','object'].includes(opt.kind)){errors.push(`${opt.name} has no fields; set it as ${opt.name}=<value>`);return}
-    if(opt.scan===false){errors.push(`${opt.name} cannot be set here: ${opt.scanNote}`);return}
-    if(has(given,opt.name)&&!isObj(given[opt.name])){errors.push(`${opt.name} is given more than once`);return}
-    const cur=has(given,opt.name)?given[opt.name]:{};
-    if(has(cur,field)){errors.push(`${opt.name}.${field} is given more than once`);return}
-    given[opt.name]={...cur,[field]:value};
-  };
-  const setPreset=name=>{
-    const k=String(name).toLowerCase();
-    if(!has(PRESETS,k)){errors.push(`unknown preset ${JSON.stringify(String(name))}; presets are ${Object.keys(PRESETS).join(', ')}`);return}
-    if(preset!==null&&preset!==k){errors.push(`only one preset can be given, not both ${preset} and ${k}`);return}
-    preset=k;
-  };
+  if(typeof raw!=='string'||raw.length>MAX_ARGS_LENGTH)return finish({...newState(),errors:[`the arguments must be text of at most ${MAX_ARGS_LENGTH} characters`]});
+  const st=newState(),{tokens,error}=tokenize(raw.trim());if(error)st.errors.push(error);
   for(const [i,t] of tokens.entries()){
-    if(/^(?:help|--help|-h|\?)$/i.test(t)){help=true;continue}
-    if(t.startsWith('{')){
-      let o;try{o=JSON.parse(t)}catch{errors.push('the JSON options object is not valid JSON');continue}
-      if(!isObj(o)){errors.push('the JSON options must be one object');continue}
-      for(const k of Object.keys(o)){if(k==='preset'){setPreset(o[k]);continue}const opt=BY_NAME.get(k);if(!opt){errors.push(`unknown option ${JSON.stringify(k)}`);continue}setGiven(opt,o[k])}
-      continue;
-    }
     const kv=/^(?:--)?([A-Za-z][A-Za-z0-9]*)(?:\.([A-Za-z][A-Za-z0-9]*))?=(.*)$/s.exec(t);
-    if(kv){
-      const [,key,field,text]=kv;
-      if(key.toLowerCase()==='preset'&&!field){setPreset(unquote(text).value??text);continue}
-      const opt=BY_LOWER.get(key.toLowerCase());if(!opt){errors.push(`unknown option ${JSON.stringify(key)}`);continue}
-      const r=field?parseField(opt,text):parseText(opt,text);
-      if(r.error){errors.push(r.error);continue}
-      if(field)setField(opt,field,r.value);else setGiven(opt,r.value);
-      continue;
-    }
-    if(has(PRESETS,t.toLowerCase())){setPreset(t);continue}
-    const flag=/^(?:--)?(no-)?([A-Za-z][A-Za-z0-9]*)$/.exec(t),flagOpt=flag&&BY_LOWER.get(flag[2].toLowerCase());
-    if(flagOpt&&flagOpt.kind==='boolean'){setGiven(flagOpt,!flag[1]);continue}
-    // A bare ref is a range only as the first argument or when it names two
-    // ends, so the words of a sentence are reported rather than taken as refs.
-    if(rangeOk(t)&&(i===0||t.includes('..'))&&!has(given,'range')){setGiven(BY_NAME.get('range'),t);continue}
-    unrecognized.push(t);errors.push(`unrecognized argument ${JSON.stringify(t)}`);
+    if(t.startsWith('{'))applyJson(st,t);
+    else if(kv)applyKeyValue(st,kv[1],kv[2],kv[3]);
+    else applyWord(st,t,i,tokens);
   }
-  const effective={...(preset?PRESETS[preset].options:{}),...given};
-  for(const k of Object.keys(effective)){const e=checkValue(BY_NAME.get(k),effective[k]);if(e)errors.push(e)}
-  if(effective.mode==='dynamic'&&!(CONTAINMENTS.includes(effective.containment)&&effective.network===false&&effective.credentials===false))errors.push('dynamic mode requires an externally enforced whole-session containment assertion: containment must be sandbox-runtime, container, vm or cloud-session, with network=false and credentials=false');
-  return finish({errors,unrecognized,preset,help,given,effective});
+  const effective={...(st.preset?PRESETS[st.preset].options:{}),...st.given};
+  for(const k of Object.keys(effective)){const e=checkValue(BY_NAME.get(k),effective[k]);if(e)st.errors.push(e)}
+  if(effective.mode==='dynamic'&&!(CONTAINMENTS.includes(effective.containment)&&effective.network===false&&effective.credentials===false))st.errors.push('dynamic mode requires an externally enforced whole-session containment assertion: containment must be sandbox-runtime, container, vm or cloud-session, with network=false and credentials=false');
+  return finish({...st,effective});
 }
 
 const shellQuote=s=>`'${String(s).replace(/'/g,'\'\\\'\'')}'`;
-function finish({errors,unrecognized=[],preset=null,help=false,given={},effective={}}){
+function finish({errors,unrecognized:words=[],preset=null,help=false,given={},effective={}}){
   const ok=errors.length===0;
-  if(!ok)return{version:1,ok,help,errors,unrecognized,preset,range:null,args:null,emitRunArgs:null,table:null};
+  if(!ok)return{version:1,ok,help,errors,unrecognized:words,preset,range:null,args:null,emitRunArgs:null,table:null};
   // Null means not set: the workflow then applies its own default.
   const set=Object.fromEntries(Object.entries(effective).filter(([,v])=>v!==null));
   const range=set.range||null,policyDocs=set.policyDocs||[];
@@ -208,7 +268,7 @@ function finish({errors,unrecognized=[],preset=null,help=false,given={},effectiv
   const rows=[['scope',range?`change ${range}`:'whole repository',range&&has(given,'range')?'given':''],['preset',preset||'none (workflow defaults)','']];
   for(const [k,v] of Object.entries(set))if(k!=='range')rows.push([k,JSON.stringify(v),has(given,k)?'given':`preset ${preset}`]);
   const table=['| Setting | Value | From |','|---|---|---|',...rows.map(r=>`| ${r.map(cell).join(' | ')} |`)].join('\n')+'\n\nEvery other option keeps its default; `/vuln-hunt:options` lists them.';
-  return{version:1,ok,help,errors,unrecognized,preset,range,args,emitRunArgs,table};
+  return{version:1,ok,help,errors,unrecognized:words,preset,range,args,emitRunArgs,table};
 }
 
 // A Markdown table cell: backslashes first, so an escaped pipe cannot be
@@ -224,18 +284,22 @@ function presetsTable(){
 function listText(){
   return[
     '## Passing options to /vuln-hunt:scan','',
-    'Arguments can be mixed in any order; options given explicitly win over a preset.','',
+    'Options given explicitly win over a preset. A range of two ends can go anywhere; a single ref (`REF`) is read',
+    'as a range only as the first argument, or anywhere as `range=REF`.','',
     '- a Git range to review a change: `main...HEAD`, `A..B` or `REF`',
     '- a preset: `quick`, `standard` or `deep`',
     '- `option=value`, such as `hunters=6`, `salvageRisk=all` or `policyDocs=SECURITY.md,docs/threats.md`',
     '- a true/false option by name, or with `no-` to turn it off: `variants`, `no-sweep`',
-    '- one field of a map: `models.hunt=opus`, `efforts.verify=xhigh`',
-    '- a JSON object, as before: `{"hunters":5,"variants":true}`',
-    '- `help` to print this list instead of scanning','',
-    'Run `/vuln-hunt:scan` with no arguments to choose the scope, depth and concurrency interactively.','',
+    '- one field of a map: `models.hunt=opus`, `efforts.verify=xhigh`, `reproEnvironment.backend=vm`',
+    '- a JSON object: `{"hunters":5,"variants":true}`',
+    '- a value with spaces in quotes: `tag="nightly run"`',
+    '- `help`, anywhere, to print this list instead of scanning','',
+    'Run `/vuln-hunt:scan` with no arguments to choose the scope, depth and concurrency from a few questions; a',
+    'session that cannot ask questions, such as `claude -p`, runs the default strict scan instead.','',
     '## Presets','',presetsTable(),'',
     '## Options','',optionsTable(),'',
     `Stages for \`models\` and \`efforts\`: ${STAGES.map(s=>`\`${s}\``).join(', ')}.`,
+    `Fields of \`reproEnvironment\`: ${Object.keys(REPRO_FIELDS).map(s=>`\`${s}\``).join(', ')}; see [Reproduction environment](https://github.com/developingchet/vuln-hunt#reproduction-environment).`,
   ].join('\n');
 }
 
@@ -249,11 +313,11 @@ function main(argv){
     case '--list':out(listText());return 0;
     case '--table':out(optionsTable());return 0;
     case '--presets-table':out(presetsTable());return 0;
-    case '--schema':out(JSON.stringify({version:1,options:OPTIONS,presets:PRESETS,stages:STAGES}));return 0;
+    case '--schema':out(JSON.stringify({version:1,options:OPTIONS,presets:PRESETS,stages:STAGES,reproFields:REPRO_FIELDS}));return 0;
     default:throw new Error('usage: vuln-hunt-options.js --resolve | --list | --table | --presets-table | --schema');
   }
 }
-module.exports={OPTIONS,PRESETS,STAGES,CONTAINMENTS,RUN_ID_RE,RANGE_RE,checkValue,tokenize,resolve,optionsTable,presetsTable,listText};
+module.exports={OPTIONS,PRESETS,STAGES,CONTAINMENTS,REPRO_FIELDS,RUN_ID_RE,RANGE_RE,checkValue,tokenize,resolve,optionsTable,presetsTable,listText};
 if(require.main===module){
   try{process.exitCode=main(process.argv.slice(2))}catch(e){process.stderr.write(`vuln-hunt-options: ${e.message}\n`);process.exitCode=1}
 }

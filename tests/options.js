@@ -25,6 +25,14 @@ function schemaTests(){
   check('options-schema-containments-match-the-workflow',same(containments,O.CONTAINMENTS));
   check('options-run-id-pattern-matches-the-workflow',literal(src,/const RUN_ID_RE=(\/.*\/i?);/,'RUN_ID_RE')===String(O.RUN_ID_RE));
   check('options-range-pattern-matches-the-workflow',literal(src,/const RANGE_RE=(\/.*\/);/,'RANGE_RE')===String(O.RANGE_RE));
+  // Every enum the workflow checks inline, and every default it applies
+  // inline, must be the schema's.
+  const enums=[...src.matchAll(/(\[[^\]]*\])\.includes\(a\.([A-Za-z]+)\)/g)].map(m=>[m[2],JSON.parse(m[1])]);
+  const enumOpts=O.OPTIONS.filter(o=>o.kind==='enum'&&o.name!=='containment');
+  check('options-schema-enums-match-the-workflow',enums.length===enumOpts.length&&enums.every(([k,v])=>same(O.OPTIONS.find(o=>o.name===k)?.choices,v)),()=>JSON.stringify(enums));
+  const defaults=[...src.matchAll(/a\.([A-Za-z]+)\?\?([^,;)]+)/g)].map(m=>[m[1],JSON.parse(m[2])]);
+  const shown=o=>o.def.replace(/`/g,'').replace(/^"(.*)"$/,'$1');
+  check('options-schema-defaults-match-the-workflow',defaults.length>=3&&defaults.every(([k,v])=>shown(O.OPTIONS.find(o=>o.name===k))===String(v)),()=>JSON.stringify(defaults));
   for(const [name,p] of Object.entries(O.PRESETS)){
     const bad=Object.entries(p.options).map(([k,v])=>{const opt=O.OPTIONS.find(o=>o.name===k);return !opt?`${k} unknown`:opt.scan===false?`${k} not settable`:O.checkValue(opt,v)}).filter(Boolean);
     check(`preset-${name}-holds-valid-scan-options`,!bad.length,()=>bad.join('; '));
@@ -43,9 +51,16 @@ function probes(opt){
     case 'runId':return[...common,'run-1','con','com1.txt','a.','..','-a_b.c',''];
     case 'paths':return[...common,['SECURITY.md'],['docs/a.md','docs/b.md'],['a.md','A.md'],['../x'],['/x'],['C:/x'],['a\\b'],Array.from({length:9},(_,i)=>`d${i}.md`),[''],[1]];
     case 'stageMap':return[...common,{hunt:'opus'},{default:'sonnet',verifyImpact:'high'},{nope:'x'},{hunt:''},{hunt:1}];
-    // The workflow checks reproEnvironment's fields itself, so only whole
-    // values whose shape both sides judge alike are probed.
-    case 'object':return opt.name==='reproEnvironment'?[null,'x',1,true,[],{backend:'vm'}]:[...common,{version:5}];
+    case 'object':return[...common,{version:5}];
+    case 'repro':{
+      const vm={backend:'vm'},box={backend:'container',image:'img@sha256:abc'};
+      return[...common,vm,box,{backend:'docker'},{backend:'container'},{backend:'container',image:'has space'},{backend:'container',image:123},
+        {...vm,sourceLocation:'/src'},{...vm,sourceLocation:''},{...vm,workingDirectory:'a\nb'},{...vm,artifactsDir:null},
+        {...vm,runtimeCapabilities:['node']},{...vm,runtimeCapabilities:Array(9).fill('x')},{...vm,runtimeCapabilities:['x'.repeat(65)]},
+        {...vm,testEntrypoints:['npm test']},{...vm,testEntrypoints:['a\rb']},{...vm,instructions:'run it'},{...vm,instructions:''},
+        {...vm,verifiedReady:true},{...vm,verifiedReady:'yes'},{...vm,timeoutMs:1000},{...vm,timeoutMs:999},{...vm,timeoutMs:3600001},{...vm,timeoutMs:1500.5},
+        {...vm,resourceLimits:{cpu:'2',memory:'4g',pids:'100'}},{...vm,resourceLimits:[]},{...vm,resourceLimits:{cpu:''}},{...vm,unknownField:1}];
+    }
     case 'range':return[null,'main','main...HEAD','a..b','HEAD@{1}..HEAD','a..b..c','-x','a b','',1,{}];
     default:throw new Error(`no probes for ${opt.kind}`);
   }
@@ -104,6 +119,29 @@ function resolveTests(){
   r=args('tag="a\\\\|b|c"');
   const row=r.ok&&r.table.split('\n').find(l=>l.startsWith('| tag |'));
   check('resolve-table-escapes-backslashes-and-pipes',r.ok&&r.args.tag==='a\\|b|c'&&row==='| tag | "a\\\\\\\\\\|b\\|c" | given |',()=>`${JSON.stringify(r.args)} ${row}`);
+  r=args('reproEnvironment.backend=container reproEnvironment.image=123 reproEnvironment.verifiedReady=yes reproEnvironment.runtimeCapabilities=node,python reproEnvironment.testEntrypoints="npm test, then lint" reproEnvironment.resourceLimits={"cpu":"2"} mode=dynamic containment=vm network=false credentials=false');
+  check('resolve-parses-repro-fields-by-type',r.ok&&same(r.args.reproEnvironment,{backend:'container',image:'123',verifiedReady:true,runtimeCapabilities:['node','python'],testEntrypoints:['npm test, then lint'],resourceLimits:{cpu:'2'}}),()=>JSON.stringify(r));
+  for(const [name,raw,pattern] of [
+    ['resolve-refuses-an-unknown-repro-backend','reproEnvironment.backend=docker',/backend must be "container" or "vm"/],
+    ['resolve-refuses-a-short-repro-timeout','reproEnvironment.backend=vm reproEnvironment.timeoutMs=5',/timeoutMs must be an integer between 1000/],
+    ['resolve-refuses-an-unknown-repro-field','reproEnvironment.imag=x',/has no field "imag"; fields are/],
+    ['resolve-refuses-an-empty-repro-object','{"reproEnvironment":{}}',/backend must be/],
+    ['resolve-suggests-a-near-option','huntres=4',/did you mean hunters\?/],
+    ['resolve-does-not-take-a-misspelt-preset-as-a-ref','deeep',/unrecognized argument "deeep"; did you mean deep\?/],
+    ['resolve-explains-no-before-an-option','no variants',/write no-variants to turn variants off/],
+    ['resolve-explains-a-ref-after-the-first-argument','deep main',/a single ref is read as a range only as the first argument; write range=main/],
+    ['resolve-refuses-a-second-range','a..b c..d',/a range is already given/],
+  ]){const x=args(raw);check(name,!x.ok&&x.errors.some(e=>pattern.test(e)),()=>JSON.stringify(x.errors))}
+  r=args('deep range=main NO-sweep');
+  check('resolve-takes-range-anywhere-and-no-in-any-case',r.ok&&r.args.range==='main'&&r.args.sweep===false,()=>JSON.stringify(r));
+  r=args('models.hunt=opus {"models":{"verify":"sonnet"}}');
+  check('resolve-merges-a-map-given-in-both-forms',r.ok&&same(r.args.models,{hunt:'opus',verify:'sonnet'}),()=>JSON.stringify(r));
+  r=args('{"Hunters":3,"PRESET":"quick"}');
+  check('resolve-reads-json-keys-in-any-case',r.ok&&r.args.hunters===3&&r.preset==='quick',()=>JSON.stringify(r));
+  r=args('HEAD@{1}..HEAD tag=a{b {"tag2":"x"}'.replace(' {"tag2":"x"}',''));
+  check('resolve-keeps-braces-inside-words',r.ok&&r.args.range==='HEAD@{1}..HEAD'&&r.args.tag==='a{b',()=>JSON.stringify(r));
+  r=args('{"tag":"a } ] b"}\r\nquick\r\n');
+  check('resolve-handles-brackets-in-json-strings-and-crlf',r.ok&&r.args.tag==='a } ] b'&&r.preset==='quick',()=>JSON.stringify(r));
   r=args('help');
   check('resolve-recognizes-help',r.help===true);
   r=args('{"tag":null,"policyDocs":null}');
@@ -135,9 +173,10 @@ function docTests(){
   check('readme-options-table-is-generated',block('vuln-hunt-options')===O.optionsTable(),'regenerate it with node vuln-hunt-options.js --table');
   check('readme-presets-table-is-generated',block('vuln-hunt-presets')===O.presetsTable(),'regenerate it with node vuln-hunt-options.js --presets-table');
   const scan=fs.readFileSync(path.join(root,'skills','scan','SKILL.md'),'utf8'),opts=fs.readFileSync(path.join(root,'skills','options','SKILL.md'),'utf8');
-  check('scan-skill-resolves-arguments-with-the-module',scan.includes('"${CLAUDE_PLUGIN_ROOT}/vuln-hunt-options.js" --resolve')&&scan.includes('  - Bash(node "${CLAUDE_PLUGIN_ROOT}/vuln-hunt-options.js":*)')&&/^name: scan$/m.test(scan));
+  check('scan-skill-resolves-arguments-with-the-module',scan.includes('"${CLAUDE_PLUGIN_ROOT}/vuln-hunt-options.js" --resolve')&&scan.includes('  - Bash(node "${CLAUDE_PLUGIN_ROOT}/vuln-hunt-options.js" --resolve:*)')&&scan.includes('  - Bash(node "${CLAUDE_PLUGIN_ROOT}/vuln-hunt-options.js" --list)')&&/^name: scan$/m.test(scan));
   check('scan-skill-offers-every-preset',Object.keys(O.PRESETS).every(p=>scan.includes(`\`${p}\``)));
-  check('options-skill-prints-the-list',opts.includes('"${CLAUDE_PLUGIN_ROOT}/vuln-hunt-options.js" --list')&&/^name: options$/m.test(opts));
+  check('options-skill-prints-the-list',opts.includes('"${CLAUDE_PLUGIN_ROOT}/vuln-hunt-options.js" --list')&&opts.includes('  - Bash(node "${CLAUDE_PLUGIN_ROOT}/vuln-hunt-options.js" --list)')&&/^name: options$/m.test(opts));
+  check('scan-skill-runs-its-commands-with-bash',/Bash tool/.test(scan)&&/claude -p/.test(scan));
   const installer=fs.readFileSync(path.join(root,'Install-VulnHunt.ps1'),'utf8');
   check('installer-ships-the-options-module',/Join-Path \$PSScriptRoot 'vuln-hunt-options\.js'/.test(installer)&&/Copy-Item -LiteralPath \$optionsSrc/.test(installer));
 }

@@ -284,6 +284,11 @@ minutes unless `CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS` is `0`
 `--max-budget-usd` ([CLI flags](https://code.claude.com/docs/en/cli-reference#cli-flags)) caps spending by ending
 the session, and with it the scan.
 
+`/vuln-hunt:scan` with no arguments asks for the scope, depth and concurrency only in a session that can ask; in
+print mode it runs the default strict scan of the whole repository, and arguments such as `deep` or
+`main...HEAD quick` set the rest. A request written in plain words needs confirmation, so in print mode the skill
+stops and shows the arguments to pass instead.
+
 ## Architecture
 
 ```mermaid
@@ -397,8 +402,9 @@ The workflow cannot create or detect an isolation boundary, so dynamic mode requ
 ### Options
 
 The workflow's options are one JSON object, passed as `args` to `/vuln-hunt:vuln-hunt`; `/vuln-hunt:scan`
-builds it from its arguments (see [Set options](#set-options)). Unknown keys, wrong types and out-of-range numbers
-are refused with an error; an option left out takes its default. `vuln-hunt-options.js` holds the table below,
+builds it from its arguments (see [Set options](#set-options)), checking every value, `reproEnvironment`'s fields
+included, as the workflow does. Unknown keys, wrong types and out-of-range numbers are refused with an error; an
+option left out takes its default. `vuln-hunt-options.js` holds the table below,
 and `node vuln-hunt-options.js --list` prints it.
 
 <!-- vuln-hunt-options:start -->
@@ -421,7 +427,7 @@ and `node vuln-hunt-options.js --list` prints it.
 | `containment` | `"sandbox-runtime"`, `"container"`, `"vm"`, `"cloud-session"` | none | The externally enforced containment of the whole session, which dynamic mode requires; see [Isolation](#isolation). |
 | `network` | `true`, `false` | none | Whether the session can reach the network; dynamic mode requires `false`. |
 | `credentials` | `true`, `false` | none | Whether the session holds credentials; dynamic mode requires `false`. |
-| `reproEnvironment` | object, see [Reproduction environment](#reproduction-environment) | none | A typed descriptor of the pre-built execution environment, so dynamic scans need no hand-edited workflow script. Its fields are checked by the workflow. |
+| `reproEnvironment` | object, see [Reproduction environment](#reproduction-environment) | none | A typed descriptor of the pre-built execution environment, so dynamic scans need no hand-edited workflow script. |
 | `reproMinSeverity` | `"critical"`, `"high"`, `"medium"`, `"low"` | none | Reproduce only verified findings at or above this severity, by the verifiers' own severity opinions. |
 | `models` | per-stage map | see below | Model per stage. |
 | `efforts` | per-stage map | see below | Effort per stage. |

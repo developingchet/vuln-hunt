@@ -5,7 +5,8 @@ argument-hint: "[range] [quick|standard|deep] [option=value ...] | help"
 disable-model-invocation: true
 allowed-tools:
   - Bash(node "${CLAUDE_PLUGIN_ROOT}/vuln-hunt-attest.js":*)
-  - Bash(node "${CLAUDE_PLUGIN_ROOT}/vuln-hunt-options.js":*)
+  - Bash(node "${CLAUDE_PLUGIN_ROOT}/vuln-hunt-options.js" --resolve:*)
+  - Bash(node "${CLAUDE_PLUGIN_ROOT}/vuln-hunt-options.js" --list)
 ---
 
 Run a strict vuln-hunt scan of the repository in the current working directory.
@@ -13,22 +14,26 @@ Run a strict vuln-hunt scan of the repository in the current working directory.
 Arguments: `$ARGUMENTS`
 
 1. Confirm the working directory is the root of the Git repository to scan. If it is not, stop and say so;
-   the helper and the workflow both expect the repository root.
+   the helper and the workflow both expect the repository root. Every command below is POSIX shell: run each
+   with the Bash tool, and stop and say so if the Bash tool is not available.
 2. Decide the argument text.
-   - When the arguments are empty, ask the user with one AskUserQuestion call holding three questions:
+   - When the arguments are empty and the session can ask questions, ask the user with one AskUserQuestion call
+     holding three questions. When it cannot (AskUserQuestion is unavailable, as in a `claude -p` run), the
+     argument text is empty, which is the default strict scan of the whole repository.
      - Scope (header `Scope`): `Whole repository` (recommended), or `Changes on this branch`, described as
-       reviewing `main...HEAD`, with Other for typing a different range such as `origin/main...HEAD`.
+       reviewing the default branch's `...HEAD` range, such as `main...HEAD`, with Other for typing a different
+       range such as `origin/main...HEAD`.
      - Depth (header `Depth`): `standard` (recommended; the workflow defaults), `quick` (two hunters with fewer
        candidates each, no salvage or cross-portfolio sweep) or `deep` (six hunters with more candidates each,
        salvage of every unreached unit, a continuation pass and variant analysis; slowest).
      - Concurrency (header `Agents`): `Runtime default` (recommended), `4`, `8` or `16` agents at a time.
 
      The argument text is then the range when changes were chosen (`main...HEAD` or the typed range), the
-     depth's preset name, and `maxConcurrentAgents=<n>` when a number was chosen, separated by spaces. Use an
-     Other answer as the user typed it.
+     depth's preset name, and `maxConcurrentAgents=<n>` when a number was chosen or typed, separated by spaces.
+     Use any other Other answer as the user typed it.
    - Otherwise the argument text is the arguments above, exactly as given.
-3. Resolve the argument text, once, by running this command with the argument text between the two marker
-   lines, unchanged and unquoted:
+3. Resolve the argument text by running this command with the Bash tool, with the argument text between the
+   two marker lines, unchanged and unquoted:
 
    ```
    node "${CLAUDE_PLUGIN_ROOT}/vuln-hunt-options.js" --resolve <<'VULN_HUNT_ARGS'
@@ -37,20 +42,24 @@ Arguments: `$ARGUMENTS`
    ```
 
    If the argument text contains a line that is exactly `VULN_HUNT_ARGS`, stop and say so instead. The command
-   prints one line of JSON.
+   prints one line of JSON and exits 0 when the arguments resolve, or 2 when they are refused. Any other exit, or
+   output that is not JSON, is a failure: show its output verbatim and stop.
    - When `help` is `true`, run `node "${CLAUDE_PLUGIN_ROOT}/vuln-hunt-options.js" --list`, print its output
      exactly as it is, and stop without scanning.
    - When `ok` is `false` and `unrecognized` is not empty because the arguments are a request in plain words
      (such as "a deep scan of this branch with variants"), rewrite that request once in the argument forms
      `--list` prints, using only options and values the user stated or that a named preset implies, and resolve
-     the rewritten text the same way. If it resolves, show the rewritten arguments and the result's `table`, ask
-     with AskUserQuestion whether to run the scan with these settings, and stop unless the user chooses to run.
+     the rewritten text the same way; this is the only second resolve. If it resolves, show the rewritten
+     arguments and the result's `table`, ask with AskUserQuestion whether to run the scan with these settings, and
+     stop unless the user chooses to run. A session that cannot ask questions stops here, showing the rewritten
+     arguments to pass instead. If the rewritten text is refused too, show both sets of `errors` and stop.
    - Otherwise, when `ok` is `false`, show `errors` verbatim, suggest `/vuln-hunt:scan help`, and stop.
    - When `ok` is `true`, show the result's `table` to the user and continue. Do not add options that were not
      given.
-4. Generate the run from the repository root, exactly once, by running
-   `node "${CLAUDE_PLUGIN_ROOT}/vuln-hunt-attest.js"` followed by a space and the resolved `emitRunArgs` string,
-   copied exactly: it starts with `--emit-run` and already quotes the range and each `--policy-doc` path. Keep the
+4. Generate the run from the repository root, exactly once, with the Bash tool, by running
+   `node "${CLAUDE_PLUGIN_ROOT}/vuln-hunt-attest.js"` followed by a space and the resolved `emitRunArgs` value,
+   copied exactly as the decoded string (not its JSON encoding): it starts with `--emit-run` and already quotes
+   the range and each `--policy-doc` path for a POSIX shell. Keep the
    quotes and the helper path exactly as written. Its stdout is one line of JSON naming a private run directory
    outside this repository that holds the attestation and a generated workflow script with the attestation
    embedded verbatim. If it exits non-zero, stop and show its error output verbatim. Its refusals (a partial
