@@ -115,11 +115,12 @@ function checkValue(opt,value){
 
 // Splits the argument text at whitespace outside quotes and outside JSON, so
 // a JSON object or a quoted value with spaces stays one token. Quotes and
-// brackets open only at the start of a token or of a value, so an apostrophe
-// or a brace inside a word (it's, HEAD@{1}) is an ordinary character.
+// brackets open only at the start of a token or right after option=, so an
+// apostrophe or a brace inside a word (it's, HEAD@{1}, tag=a='b) is an
+// ordinary character.
 function tokenize(raw){
   const tokens=[];let cur='',depth=0,quote=null,esc=false;
-  const opening=()=>depth>0||cur===''||cur.endsWith('=');
+  const opening=()=>depth>0||cur===''||/^(?:--)?[A-Za-z][A-Za-z0-9]*(?:\.[A-Za-z][A-Za-z0-9]*)?=$/.test(cur);
   for(const ch of raw){
     if(quote){cur+=ch;if(quote==='"'&&esc)esc=false;else if(quote==='"'&&ch==='\\')esc=true;else if(ch===quote)quote=null;continue}
     if((ch==='"'||(ch==='\''&&depth===0))&&opening()){quote=ch;cur+=ch;continue}
@@ -140,7 +141,7 @@ const unquote=t=>{
 };
 const BOOLEAN_WORDS={true:true,yes:true,on:true,1:true,false:false,no:false,off:false,0:false};
 const parseBoolean=(name,s)=>{const k=s.toLowerCase();return has(BOOLEAN_WORDS,k)?{value:BOOLEAN_WORDS[k]}:{error:`${name} must be true or false`}};
-const parseJson=(name,text)=>{try{return{value:JSON.parse(text)}}catch{return{error:`${name}: the value is not valid JSON`}}};
+const parseJson=(name,text)=>{try{return{value:JSON.parse(text)}}catch{return{error:`${name}: the value is not valid JSON; quote text that starts with [ or {, as ${name}="[text]"`}}};
 
 // Parses the text after key= for opt. A value that starts with { or [ is JSON.
 function parseText(opt,text){
@@ -159,11 +160,12 @@ function parseText(opt,text){
 // Parses the text after name.field= : a stage takes a model or effort name,
 // and a reproEnvironment field is parsed by its own type.
 function parseField(opt,field,text){
-  const u=/^[{[]/.test(text)?parseJson(`${opt.name}.${field}`,text):unquote(text);
-  if(u.error)return{error:`${opt.name}.${field}: ${u.error}`};
-  if(opt.kind==='stageMap'||/^[{[]/.test(text))return u;
+  const label=`${opt.name}.${field}`,json=/^[{[]/.test(text);
+  if(opt.kind==='repro'&&!has(REPRO_FIELDS,field))return{error:`reproEnvironment has no field ${JSON.stringify(field)}; fields are ${Object.keys(REPRO_FIELDS).join(', ')}`};
+  const u=json?parseJson(label,text):unquote(text);
+  if(u.error)return{error:json?u.error:`${label}: ${u.error}`};
+  if(opt.kind==='stageMap'||json)return u;
   const kind=REPRO_FIELDS[field],s=u.value;
-  if(!kind)return{error:`reproEnvironment has no field ${JSON.stringify(field)}; fields are ${Object.keys(REPRO_FIELDS).join(', ')}`};
   switch(kind){
     case 'boolean':return parseBoolean(`${opt.name}.${field}`,s);
     case 'integer':return /^\d{1,9}$/.test(s)?{value:Number(s)}:{error:`${opt.name}.${field} must be a whole number`};
@@ -181,7 +183,8 @@ function distance(a,b){
   return prev[b.length];
 }
 const WORDS=[...OPTIONS.map(o=>o.name),...Object.keys(PRESETS)];
-const nearest=t=>{const w=t.toLowerCase().replace(/^(?:--)?(?:no-)?/,'');if(w.length<4)return null;const best=WORDS.map(x=>[x,distance(w,x.toLowerCase())]).sort((a,b)=>a[1]-b[1])[0];return best&&best[1]>0&&best[1]<=2?best[0]:null};
+// A suggestion needs a word of at least minLength letters within max edits.
+const nearest=(t,max=2,minLength=4)=>{const w=t.toLowerCase().replace(/^(?:--)?(?:no-)?/,'');if(w.length<minLength)return null;const best=WORDS.map(x=>[x,distance(w,x.toLowerCase())]).sort((a,b)=>a[1]-b[1])[0];return best&&best[1]>0&&best[1]<=max?best[0]:null};
 
 // One resolution in progress: what the arguments set, and what was wrong.
 function newState(){return{errors:[],unrecognized:[],given:Object.create(null),preset:null,help:false}}
@@ -194,10 +197,6 @@ function setGiven(st,opt,value){
     st.given[opt.name]={...cur,...value};return;
   }
   st.given[opt.name]=value;
-}
-function setField(st,opt,field,value){
-  if(!['stageMap','repro'].includes(opt.kind)){st.errors.push(`${opt.name} has no fields; set it as ${opt.name}=<value>`);return}
-  setGiven(st,opt,{[field]:value});
 }
 function setPreset(st,name){
   const k=String(name).toLowerCase();
@@ -222,23 +221,31 @@ function applyKeyValue(st,key,field,text){
   if(field&&!['stageMap','repro'].includes(opt.kind)){st.errors.push(`${opt.name} has no fields; set it as ${opt.name}=<value>`);return}
   const r=field?parseField(opt,field,text):parseText(opt,text);
   if(r.error){st.errors.push(r.error);return}
-  if(field)setField(st,opt,field,r.value);else setGiven(st,opt,r.value);
+  setGiven(st,opt,field?{[field]:r.value}:r.value);
 }
 // A bare word: help, a preset, a true/false option (no- turns it off), or a
 // range. A bare ref is a range only as the first argument or when it names
-// two ends, so the words of a sentence are reported rather than taken as refs.
-function applyWord(st,t,i,tokens){
+// two ends, so the words of a sentence are reported rather than taken as refs;
+// a first argument one letter away from an option or preset is taken as a
+// typing mistake, and any ref can still be given as range=REF.
+function applyWord(st,raw,i,tokens){
+  let t=raw;
+  if(/^["']/.test(t)){const u=unquote(t);if(u.error){unrecognized(st,raw);return}t=u.value}
   if(/^(?:help|--help|-h|\?)$/i.test(t)){st.help=true;return}
   if(has(PRESETS,t.toLowerCase())){setPreset(st,t);return}
   const flag=/^(?:--)?(no-)?([A-Za-z][A-Za-z0-9]*)$/i.exec(t),flagOpt=flag&&BY_LOWER.get(flag[2].toLowerCase());
   if(flagOpt&&flagOpt.kind==='boolean'){setGiven(st,flagOpt,!flag[1]);return}
+  const asRef=i===0&&rangeOk(t)?`, or range=${t} to review the ref ${t}`:'';
+  if(flagOpt&&flag[1]){unrecognized(st,raw,`only a true/false option takes no-; ${flagOpt.name} takes a value`);return}
+  if(flagOpt){unrecognized(st,raw,`${flagOpt.name} needs a value: write ${flagOpt.name}=<value>${asRef}`);return}
   const next=tokens[i+1]&&BY_LOWER.get(tokens[i+1].toLowerCase());
-  if(/^(?:no|not|without)$/i.test(t)&&next&&next.kind==='boolean'){unrecognized(st,t,`write no-${next.name} to turn ${next.name} off`);return}
-  if(!rangeOk(t)){unrecognized(st,t);return}
-  if(has(st.given,'range')){unrecognized(st,t,'a range is already given');return}
-  if(i===0&&!t.includes('..')&&nearest(t)){unrecognized(st,t);return}
+  if(/^(?:no|not|without)$/i.test(t)&&next&&next.kind==='boolean'){unrecognized(st,raw,`write no-${next.name} to turn ${next.name} off`);return}
+  if(!rangeOk(t)){unrecognized(st,raw);return}
+  if(has(st.given,'range')){unrecognized(st,raw,'a range is already given');return}
+  const typo=i===0&&!t.includes('..')?nearest(t,1,5):null;
+  if(typo){unrecognized(st,raw,`did you mean ${typo}? To review the ref ${t}, write range=${t}`);return}
   if(i===0||t.includes('..')){setGiven(st,BY_NAME.get('range'),t);return}
-  unrecognized(st,t,`a single ref is read as a range only as the first argument; write range=${t} anywhere else`);
+  unrecognized(st,raw,`a single ref is read as a range only as the first argument; write range=${t} anywhere else`);
 }
 
 function resolve(raw){
@@ -292,7 +299,7 @@ function listText(){
     '- a true/false option by name, or with `no-` to turn it off: `variants`, `no-sweep`',
     '- one field of a map: `models.hunt=opus`, `efforts.verify=xhigh`, `reproEnvironment.backend=vm`',
     '- a JSON object: `{"hunters":5,"variants":true}`',
-    '- a value with spaces in quotes: `tag="nightly run"`',
+    '- a value with spaces, or text that starts with [ or {, in quotes: `tag="nightly run"`',
     '- `help`, anywhere, to print this list instead of scanning','',
     'Run `/vuln-hunt:scan` with no arguments to choose the scope, depth and concurrency from a few questions; a',
     'session that cannot ask questions, such as `claude -p`, runs the default strict scan instead.','',

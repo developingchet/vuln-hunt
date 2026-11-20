@@ -28,7 +28,8 @@ Arguments: `$ARGUMENTS`
        salvage of every unreached unit, a continuation pass and variant analysis; slowest).
      - Concurrency (header `Agents`): `Runtime default` (recommended), `4`, `8` or `16` agents at a time.
 
-     The argument text is then the range when changes were chosen (`main...HEAD` or the typed range), the
+     The argument text is then the range when changes were chosen (the default branch's `...HEAD` range offered,
+     such as `main...HEAD`, or the typed range), the
      depth's preset name, and `maxConcurrentAgents=<n>` when a number was chosen or typed, separated by spaces.
      Use any other Other answer as the user typed it.
    - Otherwise the argument text is the arguments above, exactly as given.

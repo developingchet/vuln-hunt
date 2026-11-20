@@ -237,8 +237,10 @@ order after an optional range; options given explicitly win over the preset:
 /vuln-hunt:scan {"hunters":5,"variants":true}
 ```
 
-A true/false option can be named alone to turn it on, or with `no-` to turn it off, and one stage of `models`
-or `efforts` is set as `models.<stage>=<model>`. The skill resolves the arguments with
+A true/false option can be named alone to turn it on, or with `no-` to turn it off. One stage of `models` or
+`efforts` is set as `models.<stage>=<model>`, and one field of `reproEnvironment` as
+`reproEnvironment.<field>=<value>`. A single ref is read as a range only as the first argument; elsewhere, or for
+a ref spelt like an option, write `range=<ref>`. The skill resolves the arguments with
 `vuln-hunt-options.js`, which refuses unknown options and out-of-range values before anything runs, and shows the
 resulting settings before the scan starts. A request written in plain words is rewritten into these forms and
 shown for confirmation first. `/vuln-hunt:scan help` and `/vuln-hunt:options` list every option.

@@ -32,6 +32,8 @@ function schemaTests(){
   check('options-schema-enums-match-the-workflow',enums.length===enumOpts.length&&enums.every(([k,v])=>same(O.OPTIONS.find(o=>o.name===k)?.choices,v)),()=>JSON.stringify(enums));
   const defaults=[...src.matchAll(/a\.([A-Za-z]+)\?\?([^,;)]+)/g)].map(m=>[m[1],JSON.parse(m[2])]);
   const shown=o=>o.def.replace(/`/g,'').replace(/^"(.*)"$/,'$1');
+  const flags=[...src.matchAll(/a\.([A-Za-z]+)(!==false|===true)/g)].map(m=>[m[1],m[2]==='!==false']);
+  check('options-schema-boolean-defaults-match-the-workflow',flags.length>=5&&flags.every(([k,on])=>O.OPTIONS.find(o=>o.name===k)?.def===(on?'`true`':'`false`')),()=>JSON.stringify(flags));
   check('options-schema-defaults-match-the-workflow',defaults.length>=3&&defaults.every(([k,v])=>shown(O.OPTIONS.find(o=>o.name===k))===String(v)),()=>JSON.stringify(defaults));
   for(const [name,p] of Object.entries(O.PRESETS)){
     const bad=Object.entries(p.options).map(([k,v])=>{const opt=O.OPTIONS.find(o=>o.name===k);return !opt?`${k} unknown`:opt.scan===false?`${k} not settable`:O.checkValue(opt,v)}).filter(Boolean);
@@ -127,18 +129,28 @@ function resolveTests(){
     ['resolve-refuses-an-unknown-repro-field','reproEnvironment.imag=x',/has no field "imag"; fields are/],
     ['resolve-refuses-an-empty-repro-object','{"reproEnvironment":{}}',/backend must be/],
     ['resolve-suggests-a-near-option','huntres=4',/did you mean hunters\?/],
-    ['resolve-does-not-take-a-misspelt-preset-as-a-ref','deeep',/unrecognized argument "deeep"; did you mean deep\?/],
+    ['resolve-does-not-take-a-misspelt-preset-as-a-ref','deeep',/unrecognized argument "deeep": did you mean deep\? To review the ref deeep, write range=deeep/],
+    ['resolve-offers-range-for-a-ref-one-letter-from-an-option','sweeps',/did you mean sweep\? To review the ref sweeps, write range=sweeps/],
+    ['resolve-asks-for-the-value-of-a-bare-option','hunters quick',/hunters needs a value: write hunters=<value>, or range=hunters to review the ref hunters/],
+    ['resolve-refuses-no-before-a-valued-option','no-hunters',/only a true\/false option takes no-/],
+    ['resolve-refuses-an-unknown-repro-field-given-as-json','reproEnvironment.imag={"a":1}',/has no field "imag"/],
+    ['resolve-refuses-an-inherited-name-as-a-repro-field','reproEnvironment.constructor=x',/has no field "constructor"/],
+    ['resolve-reports-bad-json-once','reproEnvironment.resourceLimits={bad}',/^reproEnvironment\.resourceLimits: the value is not valid JSON; quote text/],
+    ['resolve-explains-quoting-text-that-starts-with-a-bracket','tag=[nightly]',/quote text that starts with \[ or \{, as tag="\[text\]"/],
     ['resolve-explains-no-before-an-option','no variants',/write no-variants to turn variants off/],
     ['resolve-explains-a-ref-after-the-first-argument','deep main',/a single ref is read as a range only as the first argument; write range=main/],
     ['resolve-refuses-a-second-range','a..b c..d',/a range is already given/],
   ]){const x=args(raw);check(name,!x.ok&&x.errors.some(e=>pattern.test(e)),()=>JSON.stringify(x.errors))}
+  for(const ref of ['stage','code','task','demo','release'])check(`resolve-takes-${ref}-as-a-first-argument-ref`,args(`${ref} quick`).range===ref,()=>JSON.stringify(args(`${ref} quick`).errors));
+  r=args('"main...HEAD" tag=a=\'b');
+  check('resolve-unquotes-a-bare-range-and-keeps-quotes-inside-values',r.ok&&r.range==='main...HEAD'&&r.args.tag==='a=\'b',()=>JSON.stringify(r));
   r=args('deep range=main NO-sweep');
   check('resolve-takes-range-anywhere-and-no-in-any-case',r.ok&&r.args.range==='main'&&r.args.sweep===false,()=>JSON.stringify(r));
   r=args('models.hunt=opus {"models":{"verify":"sonnet"}}');
   check('resolve-merges-a-map-given-in-both-forms',r.ok&&same(r.args.models,{hunt:'opus',verify:'sonnet'}),()=>JSON.stringify(r));
   r=args('{"Hunters":3,"PRESET":"quick"}');
   check('resolve-reads-json-keys-in-any-case',r.ok&&r.args.hunters===3&&r.preset==='quick',()=>JSON.stringify(r));
-  r=args('HEAD@{1}..HEAD tag=a{b {"tag2":"x"}'.replace(' {"tag2":"x"}',''));
+  r=args('HEAD@{1}..HEAD tag=a{b');
   check('resolve-keeps-braces-inside-words',r.ok&&r.args.range==='HEAD@{1}..HEAD'&&r.args.tag==='a{b',()=>JSON.stringify(r));
   r=args('{"tag":"a } ] b"}\r\nquick\r\n');
   check('resolve-handles-brackets-in-json-strings-and-crlf',r.ok&&r.args.tag==='a } ] b'&&r.preset==='quick',()=>JSON.stringify(r));
