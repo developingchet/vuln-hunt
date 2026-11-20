@@ -271,10 +271,10 @@ const rootPrefix=norm(inventory.repoRoot).replace(/\/+$/,"")+"/",driveRoot=/^[A-
 const rel=p=>{let x=norm(p).trim();const m=driveRoot&&/^\/(?:mnt\/)?([A-Za-z])\/(.*)$/.exec(x);if(m)x=`${m[1]}:/${m[2]}`;if(under(x,rootPrefix))x=x.slice(rootPrefix.length);while(x.startsWith("./"))x=x.slice(2);return x};
 const fold=p=>inventory.ignoreCase?norm(p).toLowerCase():norm(p);
 const pathBases=(inventory.units||[]).flatMap(u=>u.paths||[]).map(norm),inBases=(p,bases)=>{if(!safePath(p))return false;const f=fold(p);return bases.some(b=>{const g=fold(b);return f===g||f.startsWith(g+"/")})},inInventoryPath=p=>inBases(p,pathBases),unitById=new Map((inventory.units||[]).map(u=>[u.id,u]));
-// A citation path is bounded and free of control and line-separator
-// characters, and a line number stays within what a source file can have, so
+// A citation path is bounded, well-formed UTF-16 and free of control and
+// line-separator characters, and a line number stays within what a source file can have, so
 // every accepted citation round-trips through its file:line string form.
-const MAX_CITE_LINE=10000000,citeFileOk=f=>typeof f==="string"&&f.length<=1024&&!/[\u0000-\u001f\u007f-\u009f\u2028\u2029]/.test(f);
+const MAX_CITE_LINE=10000000,loneSurrogate=/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/,citeFileOk=f=>typeof f==="string"&&f.length<=1024&&!/[\u0000-\u001f\u007f-\u009f\u2028\u2029]/.test(f)&&!loneSurrogate.test(f);
 const cite=c=>{let file,line,endLine;if(typeof c==="string"){const m=/^(.*):([1-9]\d*)(?:-([1-9]\d*))?$/.exec(c.trim());if(!m)return null;file=m[1];line=Number(m[2]);endLine=m[3]?Number(m[3]):null}else if(c&&typeof c==="object"){file=c.file;line=c.line;endLine=c.endLine??null}else return null;file=rel(file);if(!citeFileOk(file)||!Number.isInteger(line)||line<1||line>MAX_CITE_LINE||(endLine!==null&&(!Number.isInteger(endLine)||endLine<line||endLine>MAX_CITE_LINE))||!inInventoryPath(file))return null;return endLine!==null&&endLine!==line?`${file}:${line}-${endLine}`:`${file}:${line}`};
 const uncite=c=>c.replace(/:\d+(?:-\d+)?$/,"");
 const vote=v=>{if(!v)return null;const raw=Array.isArray(v.citations)?v.citations:[],cites=[...new Set(raw.map(cite).filter(Boolean))],bad=raw.filter(x=>!cite(x)).slice(0,8),flag=bad.length?{invalidCitations:bad}:{},filled=x=>typeof x==="string"&&x.trim().length>0;if(v.verdict==="PREDATES_CHANGE"&&!range)return{...v,rawVerdict:v.verdict,verdict:"UNKNOWN",citations:cites,...flag,evidenceIssue:"PREDATES_CHANGE applies only to range reviews"};if(v.verdict==="TRUE_POSITIVE"&&(![v.source,v.sink,v.path,v.defenses,v.gain].every(filled)||cites.length<2))return{...v,rawVerdict:v.verdict,verdict:"UNKNOWN",citations:cites,...flag,evidenceIssue:"TRUE_POSITIVE lacked complete structured evidence with at least two decisive valid in-inventory file:line citations"};if(["FALSE_POSITIVE","PREDATES_CHANGE"].includes(v.verdict)&&!cites.length)return{...v,rawVerdict:v.verdict,verdict:"UNKNOWN",citations:cites,...flag,evidenceIssue:`${v.verdict} lacked a valid in-inventory file:line citation`};return{...v,citations:cites,...flag}};
@@ -287,7 +287,7 @@ const planCheck=p=>{const c=new Map(),unknown=[];for(const q of p?.portfolios||[
 // Policy documents are attested by the helper (--policy-doc) and opted into
 // per run. Their bytes are hash-bound into stateHash, so the freshness check
 // covers them; their text reaches researchers as untrusted evidence.
-const attestedPolicy=(att&&att.version>=5?att.policyDocs:[]).filter(d=>d&&typeof d.path==="string"&&d.sha256);
+const attestedPolicy=(att?att.policyDocs:[]).filter(d=>d&&typeof d.path==="string"&&d.sha256);
 const policyRequested=(a.policyDocs||[]).map(norm),policyActive=attestedPolicy.filter(d=>policyRequested.includes(norm(d.path)));
 if(policyRequested.some(p=>!attestedPolicy.some(d=>norm(d.path)===p)))return{error:"policyDocs names a document the attestation does not cover; pass each policy document to vuln-hunt-attest.js with --policy-doc before scanning",unattested:policyRequested.filter(p=>!attestedPolicy.some(d=>norm(d.path)===p)),attested:attestedPolicy.map(d=>d.path)};
 const policyMeta=policyActive.map(d=>({path:d.path,sha256:d.sha256,bytes:d.bytes})),policyInactive=attestedPolicy.filter(d=>!policyActive.includes(d)).map(d=>d.path);
@@ -401,10 +401,14 @@ async function recoverPanels(entries){
 // fails closed: a citation the helper did not confirm, because its batch never
 // came back intact, it was over the cap or it could not be parsed, is dropped
 // exactly like one the helper rejected. The helper echoes a hash of each batch
-// it received, which this workflow recomputes; that detects a batch the
-// transport dropped, reordered or garbled, though not a mechanic that rewrote
-// the helper's output on purpose.
-const CITE_VALIDATION_CAP=4096,CITE_BATCH=512;
+// it received and a resultHash over the rest of its output, both of which
+// this workflow recomputes; that detects a batch or result the transport
+// dropped, reordered or garbled in either direction, though not a mechanic
+// that rewrote the helper's output on purpose. Batches are bounded by encoded
+// size, so each command stays a few kilobytes: well inside Windows' 32,767
+// character command line and short enough for a mechanic to copy exactly.
+const CITE_VALIDATION_CAP=4096,CITE_BATCH_BYTES=6000;
+const resultHashOk=v=>{if(!v||typeof v!=="object"||typeof v.resultHash!=="string")return false;const {resultHash,...body}=v;return sha256hex(JSON.stringify(body))===resultHash};
 const parseCiteString=s=>{const m=/^(.*):([1-9]\d*)(?:-([1-9]\d*))?$/.exec(String(s));if(!m)return null;const t={file:m[1],line:Number(m[2]),endLine:m[3]?Number(m[3]):null};return t.line<=MAX_CITE_LINE&&(t.endLine===null||t.endLine<=MAX_CITE_LINE)?t:null};
 // These two canonicalizations must stay byte-identical to canonCitations and
 // canonExpect in vuln-hunt-attest.js: the helper echoes a hash over its own
@@ -430,46 +434,61 @@ Only if there is no Bash tool, use the PowerShell tool instead:
 $f = New-TemporaryFile; Set-Content -LiteralPath $f -Value '${data}' -Encoding ascii; Set-Location -LiteralPath ${pq(att.repoRoot)}; & ${pq(att.nodePath)} ${pq(att.helperPath)} --input-base64 ${mode(pq,"$f")}; Remove-Item -LiteralPath $f
 Return its exit code and its complete stdout verbatim, without reformatting.`,{...S("validate","sonnet","low"),schema:FR,label});
 }
-const emptyValidation=status=>({rejected:new Set(),status,citations:0,invalidCount:0,unvalidatedCount:0,lineChecks:0});
+const emptyValidation=status=>({rejected:new Set(),unconfirmed:new Set(),status,citations:0,invalidCount:0,unvalidatedCount:0,lineChecks:0});
+const citeEntry=t=>({file:t.file,line:t.line,...(t.endLine!==null?{endLine:t.endLine}:{})});
 async function validateCitations(citeStrings,scope){
   const unique=[...new Set(citeStrings)];
   if(!unique.length)return emptyValidation("not-needed");
-  const rejected=new Set(),items=[];
-  for(const s of unique){const t=parseCiteString(s);if(t&&items.length<CITE_VALIDATION_CAP)items.push({s,t});else rejected.add(s)}
+  // rejected holds every citation that may not count; unconfirmed is the part
+  // of it the helper never judged, so a vote that loses one is an
+  // infrastructure gap rather than evidence against the finding.
+  const rejected=new Set(),unconfirmed=new Set(),items=[];
+  for(const s of unique){const t=parseCiteString(s);if(t&&items.length<CITE_VALIDATION_CAP)items.push({s,t,bytes:utf8Bytes(JSON.stringify(citeEntry(t))).length+1});else{rejected.add(s);unconfirmed.add(s)}}
   let unvalidatedCount=rejected.size,invalidCount=0,lineChecks=0,okBatches=0;
-  const batches=[];for(let i=0;i<items.length;i+=CITE_BATCH)batches.push(items.slice(i,i+CITE_BATCH));
+  const batches=[];{let cur=[],size=2;for(const x of items){if(cur.length&&size+x.bytes>CITE_BATCH_BYTES){batches.push(cur);cur=[];size=2}cur.push(x);size+=x.bytes}if(cur.length)batches.push(cur)}
   const results=afterStage(await parallel(batches.map((batch,k)=>async()=>{
     const ts=batch.map(x=>x.t),expected=sha256hex(canonCiteInput(ts)),label=`validate:citations:${scope}${batches.length>1?`:${k+1}`:""}`;
-    const payload=JSON.stringify(ts.map(t=>({file:t.file,line:t.line,...(t.endLine!==null?{endLine:t.endLine}:{})})));
+    const payload=JSON.stringify(ts.map(citeEntry));
     for(let attempt=0;attempt<2;attempt++){
       const r=await mechanicalCommand("citation validation",(q,f)=>`--validate-citations ${f}`,payload,attempt?`${label}:retry`:label);
       let v=null;try{v=r&&r.exitCode===0?JSON.parse(String(r.stdout).trim()):null}catch{v=null}
-      if(v&&v.version===2&&v.inputHash===expected&&v.total===ts.length&&Array.isArray(v.invalid)&&v.invalidCount===v.invalid.length&&v.invalid.every(x=>x&&Number.isInteger(x.index)&&x.index>=0&&x.index<ts.length))return{ok:true,invalid:[...new Set(v.invalid.map(x=>x.index))],lineChecks:Object.keys(v.lineCounts||{}).length};
+      if(v&&v.version===3&&resultHashOk(v)&&v.inputHash===expected&&v.total===ts.length&&Array.isArray(v.invalid)&&v.invalidCount===v.invalid.length&&v.invalid.every(x=>x&&Number.isInteger(x.index)&&x.index>=0&&x.index<ts.length))return{ok:true,invalid:[...new Set(v.invalid.map(x=>x.index))],lineChecks:Number(v.lineChecks)||0};
     }
     return{ok:false};
   })));
-  results.forEach((res,k)=>{const batch=batches[k];if(res&&res.ok){okBatches++;lineChecks+=res.lineChecks;for(const i of res.invalid){rejected.add(batch[i].s);invalidCount++}}else{for(const x of batch)rejected.add(x.s);unvalidatedCount+=batch.length}});
+  results.forEach((res,k)=>{const batch=batches[k];if(res&&res.ok){okBatches++;lineChecks+=res.lineChecks;for(const i of res.invalid){rejected.add(batch[i].s);invalidCount++}}else{for(const x of batch){rejected.add(x.s);unconfirmed.add(x.s)}unvalidatedCount+=batch.length}});
   const status=unvalidatedCount===0?"validated":batches.length&&okBatches===0?"transport-failed":"partial";
-  return{rejected,status,citations:unique.length,invalidCount,unvalidatedCount,lineChecks};
+  return{rejected,unconfirmed,status,citations:unique.length,invalidCount,unvalidatedCount,lineChecks};
 }
 function mergeValidation(...vs){
   const xs=vs.filter(v=>v&&v.status!=="not-needed");
   if(!xs.length)return vs.find(Boolean)||emptyValidation("not-needed");
   const all=st=>xs.every(v=>v.status===st),total=k=>xs.reduce((n,v)=>n+(v[k]||0),0);
-  return{rejected:new Set(xs.flatMap(v=>[...v.rejected])),status:all("validated")?"validated":all("transport-failed")?"transport-failed":all("unavailable-no-attestation")?"unavailable-no-attestation":"partial",citations:total("citations"),invalidCount:total("invalidCount"),unvalidatedCount:total("unvalidatedCount"),lineChecks:total("lineChecks")};
+  return{rejected:new Set(xs.flatMap(v=>[...v.rejected])),unconfirmed:new Set(xs.flatMap(v=>[...(v.unconfirmed||[])])),status:all("validated")?"validated":all("transport-failed")?"transport-failed":all("unavailable-no-attestation")?"unavailable-no-attestation":"partial",citations:total("citations"),invalidCount:total("invalidCount"),unvalidatedCount:total("unvalidatedCount"),lineChecks:total("lineChecks")};
 }
-function rejectCitations(v,rejected){
+function rejectCitations(v,validation){
   if(!v||!Array.isArray(v.citations))return;
-  const keep=v.citations.filter(c=>!rejected.has(c)),dropped=v.citations.filter(c=>rejected.has(c));
+  const keep=v.citations.filter(c=>!validation.rejected.has(c)),dropped=v.citations.filter(c=>validation.rejected.has(c));
   if(!dropped.length)return;
   v.citations=keep;v.invalidCitations=[...(v.invalidCitations||[]),...dropped];
+  if(dropped.some(c=>validation.unconfirmed.has(c)))v.citationsUnconfirmed=true;
   if(v.verdict==="TRUE_POSITIVE"&&keep.length<2){v.rawVerdict=v.rawVerdict||v.verdict;v.verdict="UNKNOWN";v.evidenceIssue="TRUE_POSITIVE citations did not pass mechanical file and line validation"}
   else if(["FALSE_POSITIVE","PREDATES_CHANGE"].includes(v.verdict)&&!keep.length){v.rawVerdict=v.rawVerdict||v.verdict;v.verdict="UNKNOWN";v.evidenceIssue=`${v.rawVerdict} citation did not pass mechanical file and line validation`}
 }
-function applyVoteCitationValidation(entries,rejected){
-  if(!rejected.size)return;
-  for(const e of entries){for(const s of SEATS)rejectCitations(e.seats[s],rejected);rejectCitations(e.adjudicator,rejected)}
+function applyVoteCitationValidation(entries,validation){
+  if(!validation.rejected.size)return;
+  for(const e of entries)for(const s of SEATS)rejectCitations(e.seats[s],validation);
 }
+// The second pass checks only adjudicator citations, so it applies only to
+// adjudicator votes: a panel seat's citations were already judged in the
+// first pass.
+function applyAdjudicatorValidation(entries,validation){
+  if(!validation.rejected.size)return;
+  for(const e of entries)rejectCitations(e.adjudicator,validation);
+}
+// A vote that lost a citation the helper never judged was weakened by the
+// transport, not by evidence.
+const transportWeakened=e=>[...SEATS.map(s=>e.seats[s]),e.adjudicator].some(v=>v&&v.citationsUnconfirmed);
 function applyReceiptValidation(rejected){
   if(!rejected.size)return;
   for(const [,st] of unitState){
@@ -511,7 +530,7 @@ function finalizePanels(entries){
     const t=tally(e);
     if(e.earlyStop){
       if(e.seats.REACHABILITY?.verdict==="FALSE_POSITIVE"&&e.seats.IMPACT?.verdict==="FALSE_POSITIVE"){out.push({...e,disposition:"REJECTED",verified:false});log(`${e.finding.candidateId} ${e.finding.file}:${e.finding.line}: REJECTED after two false-positive votes`)}
-      else{out.push({...e,disposition:"UNRESOLVED_EVIDENCE",verified:false,earlyStopInvalidated:true,reason:"the early-stop false-positive votes lost their decisive citations to mechanical validation, leaving the panel incomplete"});log(`${e.finding.candidateId}: early-stop votes invalidated; UNRESOLVED_EVIDENCE`)}
+      else{const infra=transportWeakened(e),disposition=infra?"UNRESOLVED_INFRASTRUCTURE":"UNRESOLVED_EVIDENCE";out.push({...e,disposition,verified:false,earlyStopInvalidated:true,reason:infra?"the early-stop false-positive votes lost citations that mechanical validation could not confirm, leaving the panel incomplete":"the early-stop false-positive votes lost their decisive citations to mechanical validation, leaving the panel incomplete"});log(`${e.finding.candidateId}: early-stop votes invalidated; ${disposition}`)}
       continue;
     }
     if(t.n<3){out.push({...e,disposition:"UNRESOLVED_INFRASTRUCTURE",verified:false,missingSeats:SEATS.filter(s=>!e.seats[s])});log(`${e.finding.candidateId}: UNRESOLVED_INFRASTRUCTURE (missing ${SEATS.filter(s=>!e.seats[s]).join(", ")})`);continue}
@@ -523,6 +542,7 @@ function finalizePanels(entries){
       else disposition="UNRESOLVED_EVIDENCE";
     }
     else if(disposition===null)disposition="UNRESOLVED_EVIDENCE";
+    if(disposition==="UNRESOLVED_EVIDENCE"&&transportWeakened(e)){disposition="UNRESOLVED_INFRASTRUCTURE";reason="votes lost citations that mechanical validation could not confirm"}
     out.push({...e,disposition,verified:disposition==="VERIFIED",...(reason?{reason}:{})});
     log(`${e.finding.candidateId} ${e.finding.file}:${e.finding.line}: ${disposition} (${t.tp} true-positive, ${t.fp} false-positive of ${t.n} vote(s)${e.adjudicator?`; adjudicator ${e.adjudicator.verdict}`:""})`);
   }
@@ -532,11 +552,11 @@ const panelCitations=entries=>entries.flatMap(e=>SEATS.flatMap(s=>e.seats[s]?.ci
 async function finalizeStage(entries,receipts,scope){
   if(!att){await adjudicate(entries);const v=emptyValidation("unavailable-no-attestation");return{judged:finalizePanels(entries),validation:v,firstPass:v}}
   const first=await validateCitations([...panelCitations(entries),...receipts],scope);
-  applyVoteCitationValidation(entries,first.rejected);
+  applyVoteCitationValidation(entries,first);
   await adjudicate(entries);
   const adjudicatorCites=entries.flatMap(e=>e.adjudicator?.citations||[]);
   const second=adjudicatorCites.length?await validateCitations(adjudicatorCites,`${scope}:adjudicate`):null;
-  if(second)applyVoteCitationValidation(entries,second.rejected);
+  if(second)applyAdjudicatorValidation(entries,second);
   return{judged:finalizePanels(entries),validation:mergeValidation(first,second),firstPass:first};
 }
 
@@ -580,7 +600,7 @@ let repro=[];if(dynamic&&verified.length){
 // path was reached with attacker-controlled input; a bare REPRODUCED status
 // without both is recorded but stays STATICALLY_VERIFIED.
 const reproducedBy=r=>r?.status==="REPRODUCED"&&r.reachedVulnerablePath===true&&r.attackerInputTested===true;
-const coverage=(inventory.units||[]).map(u=>({revision:inventory.revision,manifestHash:inventory.manifestHash,provenanceLevel,dirty:inventory.dirty,worktreeState:inventory.worktreeState,range,unitId:u.id,paths:u.paths,roots:u.roots,fileCount:u.fileCount,membershipHash:u.membershipHash||null,...(unitState.get(u.id)||{status:"unaccounted",reason:"missing state",receipts:[]}),receiptNeed:receiptNeed(u.fileCount),citationsValidated:Boolean(att),citationValidationStatus:receiptValidationStatus,tag:a.tag||null}));
+const coverage=(inventory.units||[]).map(u=>({revision:inventory.revision,manifestHash:inventory.manifestHash,provenanceLevel,dirty:inventory.dirty,worktreeState:inventory.worktreeState,range,unitId:u.id,paths:u.paths,roots:u.roots,fileCount:u.fileCount,membershipHash:u.membershipHash||null,...(unitState.get(u.id)||{status:"unaccounted",reason:"missing state",receipts:[]}),receiptNeed:receiptNeed(u.fileCount),citationsValidated:receiptValidationStatus==="validated"||receiptValidationStatus==="not-needed",citationValidationStatus:receiptValidationStatus,tag:a.tag||null}));
 const rootMap=new Map();for(const f of verified){if(!rootMap.has(f.rootKey))rootMap.set(f.rootKey,[]);rootMap.get(f.rootKey).push(f.candidateId)}const rootGroups=[...rootMap].map(([rootKey,candidateIds])=>({rootKey,candidateIds,count:candidateIds.length,grouping:"exact-rootKey-nondestructive"}));
 // Cross-run reconciliation. Candidate IDs are assigned per run and are reused
 // for unrelated findings, so a prior run's C0001 and this run's C0001 mean
@@ -623,7 +643,7 @@ Only if there is no Bash tool, use the PowerShell tool instead:
 Set-Location -LiteralPath ${pq(att.repoRoot)}; & ${pq(att.nodePath)} ${pq(att.helperPath)} --prior-findings --exclude-run ${pq(runId)}
 Return its exit code and its complete stdout verbatim, without reformatting.`,{...S("validate","sonnet","low"),schema:FR,label:"prior-findings"});
   let prior=null;try{prior=pf&&pf.exitCode===0?JSON.parse(String(pf.stdout).trim()):null}catch{prior=null}
-  const goodPrior=prior&&prior.version===2&&Array.isArray(prior.priorRuns)&&prior.priorRuns.length<=16&&prior.priorRuns.every(r=>r&&typeof r.runId==="string"&&RUN_ID_RE.test(r.runId)&&Array.isArray(r.findings)&&r.findings.length<=64&&r.findings.every(f=>f&&typeof f==="object"));
+  const goodPrior=prior&&prior.version===3&&resultHashOk(prior)&&Array.isArray(prior.priorRuns)&&prior.priorRuns.length<=16&&prior.priorRuns.every(r=>r&&typeof r.runId==="string"&&RUN_ID_RE.test(r.runId)&&Array.isArray(r.findings)&&r.findings.length<=64&&r.findings.every(f=>f&&typeof f==="object"));
   if(goodPrior)reconciliation={status:"matched",...reconcile(prior.priorRuns),priorRuns:prior.priorRuns.length,truncated:Boolean(prior.truncated)};
 }
 // Closing freshness check, taken before the report so the report can state
@@ -661,7 +681,8 @@ if(att&&report?.written&&!out.reportError){
   const expectHash=sha256hex(canonExpectInput(expect));
   const rv=await mechanicalCommand("report validation",(q,f)=>`--validate-report ${q(runId)} ${f}`,JSON.stringify(expect),"validate:report");
   let parsed=null;try{parsed=rv&&rv.exitCode===0?JSON.parse(String(rv.stdout).trim()):null}catch{parsed=null}
-  reportValidation=parsed&&parsed.version===2&&parsed.expectHash===expectHash&&Array.isArray(parsed.errors)?{ok:parsed.ok===true&&parsed.errors.length===0,errors:parsed.errors.slice(0,64),errorCount:Number(parsed.errorCount)||parsed.errors.length,counts:parsed.counts||null}:{ok:false,errors:["the validator output did not echo this run's expect hash; treat the report as unverified"],expectHashMatch:false};
+  const intact=parsed&&parsed.version===3&&resultHashOk(parsed)&&Array.isArray(parsed.errors);
+  reportValidation=intact&&parsed.expectHash===expectHash?{ok:parsed.ok===true&&parsed.errors.length===0,errors:parsed.errors.slice(0,64),errorCount:Number(parsed.errorCount)||parsed.errors.length,counts:parsed.counts||null}:{ok:false,errors:[!parsed?"the report validator did not run or returned no JSON; treat the report as unverified":!intact?"the report validator's output did not arrive intact; treat the report as unverified":"the validator output did not echo this run's expect hash; treat the report as unverified"],expectHashMatch:intact?false:null};
 }
 const severityOf=f=>{const e=judged.find(x=>x.finding===f);let best=0;for(const s of SEATS)best=Math.max(best,sevRankOf(e?.seats?.[s]?.severity));return best};
 const severityDistribution={critical:0,high:0,medium:0,low:0,unrated:0};

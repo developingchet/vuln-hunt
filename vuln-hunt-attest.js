@@ -146,9 +146,13 @@ function rev(ref){const s=text(git(['rev-parse','--verify',`${ref}^{commit}`]));
 // report and prior-run checks are computed by this trusted helper rather
 // than judged by a model. Each reads the repository only; none writes it.
 // The helper echoes a hash of the input it received, which the workflow
-// recomputes: that catches a list the transport dropped, reordered or
-// garbled. It is not a signature, so a mechanic that rewrote this helper's
-// output on purpose would not be detected by it.
+// recomputes, and adds a resultHash over the rest of its own output, which
+// the workflow recomputes over what came back: together they catch a list or
+// result the transport dropped, reordered or garbled in either direction.
+// Neither is a signature, so a mechanic that rewrote this helper's output on
+// purpose would not be detected by them. Outputs name inputs by index and
+// carry no repository file names, so the mechanic never reads file-name text
+// back either.
 // With --input-base64 the input file holds base64 of the UTF-8 JSON. The
 // workflow sends input that way so the command a mechanic copies carries no
 // quote, shell metacharacter or prose taken from repository file names.
@@ -163,7 +167,8 @@ function readJsonArg(p,what){
 }
 // Repository-controlled files are read through one descriptor after lstat has
 // checked every parent directory and the file itself, on every platform: a
-// symlink, junction or other reparse point anywhere on the path is refused,
+// symlink or junction anywhere on the path is refused (Node reports other
+// Windows reparse points, such as cloud-file placeholders, as ordinary files),
 // and the descriptor must be the file lstat saw (same device and inode), so a
 // swap of the final component between the check and the open is detected.
 // O_NOFOLLOW and O_NONBLOCK add the same refusal on POSIX and keep a FIFO
@@ -181,6 +186,11 @@ function openRepoFile(rel){
   try{const st=fs.fstatSync(fd,{bigint:true});if(!st.isFile()||st.ino!==pre.ino||st.dev!==pre.dev)throw notRegularError('file was replaced while it was being opened');return fd}
   catch(e){fs.closeSync(fd);throw e}
 }
+const emitWithHash=o=>emit({...o,resultHash:crypto.createHash('sha256').update(JSON.stringify(o)).digest('hex')});
+// Reads at most cap bytes from an open descriptor; returns null when the file
+// is larger, so no caller reads an unbounded file.
+function readBounded(fd,cap){const size=Number(fs.fstatSync(fd).size);if(size>cap)return null;const buf=Buffer.alloc(size);let off=0;while(off<size){const k=fs.readSync(fd,buf,off,size-off,off);if(!k)break;off+=k}return buf.subarray(0,off)}
+const loneSurrogate=/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/;
 const openFailure=e=>e&&e.code==='VH_NOT_REGULAR'?e.message:e&&['ELOOP','EISDIR'].includes(e.code)?'not a regular file (symlink, submodule or directory)':e&&['ENOENT','ENOTDIR'].includes(e.code)?'missing from the working tree':null;
 const MAX_LINE=10000000,SEVERITIES=['critical','high','medium','low'],EVIDENCE_LEVELS=['STATICALLY_VERIFIED','EXECUTION_REPRODUCED'],RELATIONS=['REPRODUCED_AGAIN','TENTATIVE_MATCH','NEW','UNKNOWN'];
 const canonCitations=cs=>JSON.stringify((Array.isArray(cs)?cs:[]).map(c=>c&&typeof c==='object'?[String(c.file),Number(c.line),c.endLine==null?null:Number(c.endLine)]:null));
@@ -194,8 +204,8 @@ if(validateCitationsPath){
   const ignoreCase=boolConfig('core.ignoreCase'),folded=new Map();
   if(ignoreCase)for(const p of manifest){const k=p.toLowerCase();folded.set(k,folded.has(k)&&folded.get(k)!==p?null:p)}
   const special=stageSpecial(),linkSet=new Set([...special.trackedSymlinks,...special.submodules]);
-  const invalid=[],lineCounts=Object.create(null),fileLines=new Map();
-  const bad=(index,c,reason)=>({index,file:c.file,line:c.line,endLine:c.endLine??null,reason});
+  const invalid=[],fileLines=new Map();
+  const bad=(index,c,reason)=>({index,reason});
   const countLines=fd=>{const buf=Buffer.alloc(1<<20);let n=0,bytes=0,last=-1;for(let r;(r=fs.readSync(fd,buf,0,buf.length,null))>0;){bytes+=r;last=buf[r-1];for(let i=0;i<r;i++)if(buf[i]===10)n++}return bytes===0?0:last===10?n:n+1};
   input.forEach((c,index)=>{
     if(!safeRel(c.file)){invalid.push(bad(index,c,'path is absolute, backslashed, or contains .. or a control character'));return}
@@ -210,10 +220,9 @@ if(validateCitationsPath){
     }
     const {lines,reason}=fileLines.get(target);
     if(lines===null){invalid.push(bad(index,c,reason));return}
-    lineCounts[c.file]=lines;
     if(lines===0||c.line>lines||(c.endLine!=null&&c.endLine>lines))invalid.push(bad(index,c,`line beyond the file's ${lines} line(s)`));
   });
-  emit({version:2,inputHash:crypto.createHash('sha256').update(canonCitations(input)).digest('hex'),total:input.length,invalidCount:invalid.length,invalid,lineCounts});process.exit(0);
+  emitWithHash({version:3,inputHash:crypto.createHash('sha256').update(canonCitations(input)).digest('hex'),total:input.length,invalidCount:invalid.length,invalid,lineChecks:[...fileLines.values()].filter(x=>x.lines!==null).length});process.exit(0);
 }
 // The expectation names every verified finding with the findingId, relation
 // and evidence level the run assigned it, and every unit with its coverage
@@ -231,33 +240,34 @@ if(validateReportRunDir!==null){
   if(validateReportRunDir!==expect.runId)throw new Error('--validate-report run directory must equal the expect runId');
   if(!outputDirExists('.vuln-hunt')||!outputDirExists('.vuln-hunt/runs')||!outputDirExists(`.vuln-hunt/runs/${expect.runId}`))throw new Error('run directory does not exist');
   const errors=[],REPORT_FILE_CAP=16*1024*1024;
-  const readRunFile=f=>{let fd=null;try{fd=openRepoFile(`.vuln-hunt/runs/${expect.runId}/${f}`);const size=Number(fs.fstatSync(fd).size);if(size>REPORT_FILE_CAP){errors.push(`${f}: larger than 16 MiB`);return null}return{text:fs.readFileSync(fd,'utf8'),size}}catch(e){const why=openFailure(e);if(!why)throw e;errors.push(`${f}: ${why==='missing from the working tree'?'missing':why}`);return null}finally{if(fd!==null)fs.closeSync(fd)}};
+  const readRunFile=f=>{let fd=null;try{fd=openRepoFile(`.vuln-hunt/runs/${expect.runId}/${f}`);const buf=readBounded(fd,REPORT_FILE_CAP);if(buf===null){errors.push(`${f}: larger than 16 MiB`);return null}return{text:buf.toString('utf8'),size:buf.length}}catch(e){const why=openFailure(e);if(!why)throw e;errors.push(`${f}: ${why==='missing from the working tree'?'missing':why}`);return null}finally{if(fd!==null)fs.closeSync(fd)}};
   const report=readRunFile('vuln-hunt-report.md'),findingsFile=readRunFile('findings.jsonl'),coverageFile=readRunFile('coverage.jsonl');
   if(report&&report.size<200)errors.push('vuln-hunt-report.md is under 200 bytes');
   const readJsonl=(f,r)=>{if(!r)return[];const out=[];for(const line of r.text.split(/\r?\n/)){if(!line.trim())continue;let o;try{o=JSON.parse(line)}catch{errors.push(`${f}: a line is not JSON`);continue}if(!o||typeof o!=='object'||Array.isArray(o)){errors.push(`${f}: a line is not a JSON object`);continue}out.push(o)}return out};
   const findings=readJsonl('findings.jsonl',findingsFile),coverage=readJsonl('coverage.jsonl',coverageFile);
+  const show=v=>JSON.stringify(String(v).slice(0,64)).replace(/[^\x20-\x7e]/g,'?');
   const want=new Map(expect.findings.map(f=>[f.candidateId,f])),seen=new Set();
   for(const f of findings){
     const id=typeof f.candidateId==='string'?f.candidateId:'',w=want.get(id);
-    if(!w){errors.push(`findings.jsonl: candidate ${id||'(missing)'} is not in the verified set`);continue}
+    if(!w){errors.push(`findings.jsonl: candidate ${id?show(id):'(missing)'} is not in the verified set`);continue}
     if(seen.has(id))errors.push(`findings.jsonl: duplicate candidate ${id}`);
     seen.add(id);
     if(!SEVERITIES.includes(f.severity))errors.push(`findings.jsonl: candidate ${id} has invalid severity`);
     if(f.findingId!==w.findingId)errors.push(`findings.jsonl: candidate ${id} does not carry this run's findingId, which the next run's reconciliation needs`);
-    if(f.relation!==w.relation)errors.push(`findings.jsonl: candidate ${id} has relation ${String(f.relation)}, expected ${w.relation}`);
-    if(f.evidence!==w.evidence)errors.push(`findings.jsonl: candidate ${id} has evidence ${String(f.evidence)}, expected ${w.evidence}`);
+    if(f.relation!==w.relation)errors.push(`findings.jsonl: candidate ${id} has relation ${show(f.relation)}, expected ${w.relation}`);
+    if(f.evidence!==w.evidence)errors.push(`findings.jsonl: candidate ${id} has evidence ${show(f.evidence)}, expected ${w.evidence}`);
     if(typeof f.file!=='string'||!f.file||!Number.isInteger(f.line)||f.line<1||typeof f.symbol!=='string')errors.push(`findings.jsonl: candidate ${id} lacks the file, line and symbol the next run's reconciliation needs`);
   }
   for(const id of want.keys())if(!seen.has(id))errors.push(`findings.jsonl: verified candidate ${id} is missing`);
   const wantUnits=new Map(expect.coverage.map(u=>[u.unitId,u.status])),unitSeen=new Map();
   for(const c of coverage){
     const id=typeof c.unitId==='string'?c.unitId:'';
-    if(!wantUnits.has(id)){errors.push(`coverage.jsonl: unit ${id||'(missing)'} is not attested`);continue}
+    if(!wantUnits.has(id)){errors.push(`coverage.jsonl: unit ${id?show(id):'(missing)'} is not attested`);continue}
     unitSeen.set(id,(unitSeen.get(id)||0)+1);
-    if(c.status!==wantUnits.get(id))errors.push(`coverage.jsonl: unit ${id} has status ${String(c.status)}, expected ${wantUnits.get(id)}`);
+    if(c.status!==wantUnits.get(id))errors.push(`coverage.jsonl: unit ${id} has status ${show(c.status)}, expected ${wantUnits.get(id)}`);
   }
   for(const id of wantUnits.keys())if(!unitSeen.has(id))errors.push(`coverage.jsonl: unit ${id} is missing`);else if(unitSeen.get(id)>1)errors.push(`coverage.jsonl: unit ${id} appears more than once`);
-  emit({version:2,ok:errors.length===0,errors:errors.slice(0,64),errorCount:errors.length,counts:{findings:findings.length,coverage:coverage.length},expectHash:crypto.createHash('sha256').update(canonExpect(expect)).digest('hex')});process.exit(0);
+  emitWithHash({version:3,ok:errors.length===0,errors:errors.slice(0,64),errorCount:errors.length,counts:{findings:findings.length,coverage:coverage.length},expectHash:crypto.createHash('sha256').update(canonExpect(expect)).digest('hex')});process.exit(0);
 }
 // Prior findings come from earlier run directories under the repository's
 // own output namespace, so every field is bounded and typed here and the
@@ -277,7 +287,7 @@ if(priorFindings){
   }
   runs.sort((a,b)=>b.mtime-a.mtime||(a.name<b.name?-1:a.name>b.name?1:0));
   if(runs.length>PRIOR_RUN_CAP)truncated=true;
-  const bounded=(v,n)=>typeof v==='string'&&v.length>0&&v.length<=n&&!/[\0-\x1f\x7f]/.test(v)?v:null;
+  const bounded=(v,n)=>typeof v==='string'&&v.length>0&&v.length<=n&&!/[\0-\x1f\x7f]/.test(v)&&!loneSurrogate.test(v)?v:null;
   const prior=[];
   for(const r of runs.slice(0,PRIOR_RUN_CAP)){
     let raw=null,fd=null;
@@ -295,11 +305,11 @@ if(priorFindings){
       if(findings.length>=PER_RUN_CAP){truncated=true;break}
       let o;try{o=JSON.parse(line)}catch{continue}
       if(!o||typeof o!=='object'||Array.isArray(o))continue;
-      findings.push({candidateId:typeof o.candidateId==='string'&&/^[A-Za-z0-9._-]{1,32}$/.test(o.candidateId)?o.candidateId:null,findingId:typeof o.findingId==='string'&&/^[0-9a-f]{64}$/.test(o.findingId)?o.findingId:null,file:typeof o.file==='string'&&o.file.length<=1024&&safeRel(o.file)?o.file:null,line:Number.isInteger(o.line)&&o.line>=1&&o.line<=MAX_LINE?o.line:null,symbol:bounded(o.symbol,256),severity:SEVERITIES.includes(o.severity)?o.severity:null,evidence:EVIDENCE_LEVELS.includes(o.evidence)?o.evidence:null,rootKey:bounded(o.rootKey,512)});
+      findings.push({candidateId:typeof o.candidateId==='string'&&/^[A-Za-z0-9._-]{1,32}$/.test(o.candidateId)?o.candidateId:null,findingId:typeof o.findingId==='string'&&/^[0-9a-f]{64}$/.test(o.findingId)?o.findingId:null,file:typeof o.file==='string'&&o.file.length<=1024&&safeRel(o.file)&&!loneSurrogate.test(o.file)?o.file:null,line:Number.isInteger(o.line)&&o.line>=1&&o.line<=MAX_LINE?o.line:null,symbol:bounded(o.symbol,256),severity:SEVERITIES.includes(o.severity)?o.severity:null,evidence:EVIDENCE_LEVELS.includes(o.evidence)?o.evidence:null,rootKey:bounded(o.rootKey,512)});
     }
     prior.push({runId:r.name,findings});
   }
-  emit({version:2,priorRuns:prior,truncated});process.exit(0);
+  emitWithHash({version:3,priorRuns:prior,truncated});process.exit(0);
 }
 function mergeBase(a,b){const s=text(git(['merge-base',a,b]));if(!oid(s))throw new Error(`could not resolve merge-base for ${a} and ${b}`);return s}
 function emptyTree(){const s=text(git(['hash-object','-t','tree','--stdin'],{input:Buffer.alloc(0)}));if(!oid(s))throw new Error('could not hash empty tree');return s}

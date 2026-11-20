@@ -519,7 +519,7 @@ Severity follows the boundary a contradicted claim describes, not the mere fact 
 | State | Meaning |
 |---|---|
 | `deep-reviewed` | its hunter reported it reached, cited lines inside it, and the receipts are enough for its size |
-| `receipt-thin` | reached with citations, but fewer distinct ones than the unit needs (up to 8, scaled from one per 25 files); salvage revisits it |
+| `receipt-thin` | reached with citations, but fewer distinct ones than the unit needs (up to 8, scaled from one per 25 files); salvage revisits it when salvage is on and the unit's risk is at or above `salvageRisk` |
 | `receipt-missing` | reported reached without a valid citation inside it, or all receipts failed mechanical validation |
 | `not-reached` | its hunter reported it was not reached, with a reason |
 | `coverage-conflict` | reported both reached and not reached |
@@ -532,16 +532,24 @@ Severity follows the boundary a contradicted claim describes, not the mere fact 
 After the panels, every researcher and verifier citation is checked mechanically with
 `--validate-citations`, and an adjudicator's citations are checked the same way before its vote counts: the
 file must be in the live manifest (in any letter case on a case-insensitive checkout), a regular file reached
-without a symlink or junction anywhere on its path, and the line must exist. Citations travel to the helper in
-batches of 512, base64-encoded, so no file name text appears in the command the mechanic runs. Validation fails
-closed: a citation the helper rejected, and every citation it did not confirm (its batch did not come back intact
-with the echoed input hash, it was past the 4096 cap, or it could not be parsed), is dropped from its vote and its
-receipt. The echoed hash detects a garbled or truncated transport; it is not a signature, and a mechanic that
-rewrote the helper's output on purpose would not be detected by it. The result's `citationsValidated` reports the
-outcome: `not-needed` (the scan produced no citations), `validated`, `partial` (some citations could not be
-confirmed and were dropped), `transport-failed` (none could be confirmed, so no finding verifies and reached
-units lose their receipts), or `unavailable-no-attestation`. After `partial` or `transport-failed`, rerun the
-scan before trusting its unresolved counts.
+without a symlink or junction anywhere on its path, and the line must exist. Citations travel to the helper
+base64-encoded, in batches of at most about 6 KB of JSON, so no file name text appears in the command the
+mechanic runs and each command stays well inside the Windows command-line limit. The helper's output names
+citations by index only and carries a hash of the input it received and a `resultHash` over the rest of the
+output; the workflow recomputes both, which detects a garbled or truncated transport in either direction. Neither
+is a signature, and a mechanic that rewrote the helper's output on purpose would not be detected by them.
+
+Validation fails closed: a citation the helper rejected, and every citation it did not confirm (its batch did not
+come back intact, it was past the 4096 cap, or it could not be parsed), is dropped from its vote and its receipt.
+Each batch stands alone, so one lost batch leaves the others' citations in place. A finding whose votes lost only
+citations the helper rejected is `UNRESOLVED_EVIDENCE` when the panel can no longer decide; one whose votes lost
+citations the helper never judged is `UNRESOLVED_INFRASTRUCTURE`, since the gap is in the transport rather than in
+the evidence. The result's `coverage.citationsValidated` reports the outcome: `not-needed` (the scan produced no
+citations), `validated`, `partial` (some citations could not be confirmed and were dropped),
+`transport-failed` (none could be confirmed, so no finding verifies and reached units lose their receipts), or
+`unavailable-no-attestation`. Each `coverage.jsonl` row carries the same status as `citationValidationStatus`
+and a boolean `citationsValidated` that is true only for `validated` and `not-needed`. After `partial` or
+`transport-failed`, rerun the scan before trusting its unresolved counts.
 
 `deep-reviewed` and `gap-reviewed` remain the researcher's own accounting for which files were read; mechanical
 validation confirms the citations point at real lines, not that every line was inspected.

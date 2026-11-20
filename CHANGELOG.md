@@ -25,11 +25,14 @@ Reliability and evidence-integrity release.
   verifier citation and adjudicator citation against the live manifest and real line counts, so a nonexistent
   file, a prefix-matched directory, an impossible line number, or a path through a symlink or junction cannot
   support a verdict or a coverage receipt. Validation fails closed: a citation the helper did not confirm,
-  including every citation in a batch whose output did not come back intact with its echoed input hash, is
-  dropped exactly like an invalid one. The echoed hash detects a garbled or truncated transport, not a mechanic
-  that rewrote the output on purpose. Input reaches the helper base64-encoded, so no file name text appears in
-  the command the mechanic runs. Coverage gains a `receipt-thin` state (a 200-file unit needs more than one
-  distinct citation; salvage revisits thin units) and a `citationsValidated` status.
+  including every citation in a batch whose output did not come back intact, is dropped exactly like an invalid
+  one, and a finding that loses its verdict that way is unresolved by infrastructure rather than by evidence.
+  The helper echoes a hash of its input and adds a `resultHash` over its output, which detects a garbled or
+  truncated transport in either direction, not a mechanic that rewrote the output on purpose. Input reaches the
+  helper base64-encoded in batches bounded by size, and its output names citations by index, so no file name
+  text appears in the command the mechanic runs or in what it copies back. Coverage gains a `receipt-thin`
+  state (a 200-file unit needs more than one distinct citation; salvage revisits thin units at or above
+  `salvageRisk`) and a `citationsValidated` status.
 - `policyDocs` makes repository security-policy documents first-class: attested with `--policy-doc`, hashed into
   the state hash, and read by every researcher and verifier as untrusted evidence. A contradicted claim is
   evidence for a finding; a vulnerability the documents never mention is still reported; out-of-scope lists are
