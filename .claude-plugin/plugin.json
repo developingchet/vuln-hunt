@@ -1,7 +1,7 @@
 {
   "name": "vuln-hunt",
   "displayName": "vuln-hunt",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Workflow for authorized source-code vulnerability research: Git-attested scope, read-only research agents, unit-by-unit coverage and independently verified findings.",
   "author": { "name": "developingchet" },
   "homepage": "https://github.com/developingchet/vuln-hunt",

@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.1.1 - 2026-11-20
 
 - `/vuln-hunt:scan` takes presets and plain option arguments as well as JSON: `quick`, `standard` or `deep`,
   `option=value` pairs, a true/false option by name or with `no-`, and one field of a map at a time
