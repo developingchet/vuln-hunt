@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased
+
+- `/vuln-hunt:scan` takes presets and plain option arguments as well as JSON: `quick`, `standard` or `deep`,
+  `option=value` pairs, a true/false option by name or with `no-`, and one stage of `models` or `efforts` at a
+  time (`models.hunt=opus`). Run with no arguments, it asks for the scope, the depth and how many agents run at
+  once. The new `vuln-hunt-options.js` resolves the arguments, refusing unknown options and out-of-range values
+  before anything runs, and the skill shows the resulting settings before the scan starts; a request written in
+  plain words is rewritten into these forms and confirmed first. Options a strict, attested scan sets itself or
+  ignores (`attestation`, `strictProvenance`, `runId`, `allowSparse`, `allowLfsPointers`) are refused there.
+- `/vuln-hunt:options` and `/vuln-hunt:scan help` list every option with its values, default and effect, the
+  presets, and the argument forms. README.md's options and presets tables are generated from the same schema, and
+  the tests hold the schema to the workflow's own option checks value by value.
+
 ## 0.1.0 - 2026-11-20
 
 Reliability and evidence-integrity release.

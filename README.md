@@ -169,6 +169,7 @@ moves only as [Install a release](#install-a-release) describes. Each command is
 | Name | What it is |
 |---|---|
 | `/vuln-hunt:scan` | Skill: attests the repository and runs the workflow with strict provenance. |
+| `/vuln-hunt:options` | Skill: lists every workflow option with its values and default, the presets, and the argument forms `/vuln-hunt:scan` accepts. |
 | `/vuln-hunt:helpers` | Skill: prints the launcher, attestation and postflight commands with this installation's paths. |
 | `/vuln-hunt:vuln-hunt` | The workflow, for running it with your own options. |
 | `vuln-hunt:vuln-hunt-researcher` | Worker agent for recon, hunting and verification: Read, Glob and Grep only. |
@@ -225,12 +226,30 @@ context; for very large changes, review smaller ranges to keep the workflow's ow
 
 ### Set options
 
-Options follow as JSON:
+Run `/vuln-hunt:scan` with no arguments to choose the scope, the depth and how many agents run at once from a
+short set of questions. To set options directly, give a preset, `option=value` pairs or a JSON object, in any
+order after an optional range; options given explicitly win over the preset:
 
 ```text
+/vuln-hunt:scan deep
+/vuln-hunt:scan main...HEAD quick maxConcurrentAgents=8
+/vuln-hunt:scan hunters=5 variants no-sweep models.hunt=opus policyDocs=SECURITY.md
 /vuln-hunt:scan {"hunters":5,"variants":true}
-/vuln-hunt:scan main...HEAD {"candidateCap":4}
 ```
+
+A true/false option can be named alone to turn it on, or with `no-` to turn it off, and one stage of `models`
+or `efforts` is set as `models.<stage>=<model>`. The skill resolves the arguments with
+`vuln-hunt-options.js`, which refuses unknown options and out-of-range values before anything runs, and shows the
+resulting settings before the scan starts. A request written in plain words is rewritten into these forms and
+shown for confirmation first. `/vuln-hunt:scan help` and `/vuln-hunt:options` list every option.
+
+<!-- vuln-hunt-presets:start -->
+| Preset | Sets | Use |
+|---|---|---|
+| `quick` | `hunters=2`, `candidateCap=2`, `salvage=false`, `sweep=false` | A fast first look: two hunters with fewer candidates each, and no salvage or cross-portfolio sweep. |
+| `standard` | nothing | The workflow defaults. |
+| `deep` | `hunters=6`, `candidateCap=5`, `salvageRisk=all`, `saturationContinuation=true`, `variants=true` | The most thorough and slowest: six hunters with more candidates each, salvage of every unreached unit, a continuation pass and variant analysis. |
+<!-- vuln-hunt-presets:end -->
 
 See [Options](#options) for the full list.
 
@@ -294,8 +313,9 @@ flowchart LR
 | `.claude-plugin/plugin.json`, `.claude-plugin/marketplace.json` | Plugin manifest and the marketplace that lists it. |
 | `vuln-hunt.js` | The workflow: validates options and the attestation, runs every stage, enforces the verification rules and builds the result. |
 | `vuln-hunt-attest.js` | Node helper with no dependencies: attestation, fingerprint for the freshness check, comparison for postflight, self-test. |
+| `vuln-hunt-options.js` | The workflow's options, values and defaults, the presets, and the parser that turns `/vuln-hunt:scan`'s arguments into workflow args. |
 | `agents/*.md`, `vuln-hunt-agents.json` | The three worker agents: as plugin agents, and as the JSON the launcher and manual installer use. |
-| `skills/scan`, `skills/helpers` | The two skills. |
+| `skills/scan`, `skills/options`, `skills/helpers` | The three skills. |
 | `vuln-hunt-launch.js` | Starts Claude Code with session-level workers, user settings only and no MCP servers. |
 | `*.ps1` | Windows wrappers: manual installer, prerequisite check, attestation and postflight. |
 | `tests/run.js` | Regression suite, run on Windows and Ubuntu in CI. |
@@ -376,14 +396,16 @@ The workflow cannot create or detect an isolation boundary, so dynamic mode requ
 
 ### Options
 
-The workflow's options are one JSON object, passed after the range to `/vuln-hunt:scan` or as `args` to
-`/vuln-hunt:vuln-hunt`. Unknown keys, wrong types and out-of-range numbers are refused with an error; an option
-left out takes its default.
+The workflow's options are one JSON object, passed as `args` to `/vuln-hunt:vuln-hunt`; `/vuln-hunt:scan`
+builds it from its arguments (see [Set options](#set-options)). Unknown keys, wrong types and out-of-range numbers
+are refused with an error; an option left out takes its default. `vuln-hunt-options.js` holds the table below,
+and `node vuln-hunt-options.js --list` prints it.
 
+<!-- vuln-hunt-options:start -->
 | Option | Values | Default | Effect |
 |---|---|---|---|
 | `attestation` | helper output | none | The attestation; required by `strictProvenance` and `range`. `/vuln-hunt:scan` embeds it in a generated run script instead of passing it here. |
-| `strictProvenance` | `true`, `false` | `false` | Refuse anything short of an attested, clean, fully hydrated checkout. |
+| `strictProvenance` | `true`, `false` | `false` | Refuse anything short of an attested, clean, fully hydrated checkout. `/vuln-hunt:scan` always sets it. |
 | `range` | `A..B`, `A...B`, `REF` | none | Review a change instead of the whole tree. |
 | `hunters` | 2–6, `"auto"` | 4 | Most hunter portfolios recon may create. |
 | `candidateCap` | 1–6 | 3 | Most candidates per hunter; a hunter that hits it is listed in `candidateSaturation`. |
@@ -396,13 +418,18 @@ left out takes its default.
 | `saturationContinuation` | `true`, `false` | `false` | Give hunters that hit `candidateCap` one more pass for other roots. |
 | `variants` | `true`, `false` | `false` | List other affected sites of verified roots. |
 | `mode` | `"static"`, `"dynamic"` | `"static"` | `"dynamic"` adds contained reproduction. |
-| `containment`, `network`, `credentials` | see [Isolation](#isolation) | none | Assertions dynamic mode requires. |
-| `reproEnvironment` | object, see [Reproduction environment](#reproduction-environment) | none | A typed descriptor of the pre-built execution environment, so dynamic scans need no hand-edited workflow script. |
+| `containment` | `"sandbox-runtime"`, `"container"`, `"vm"`, `"cloud-session"` | none | The externally enforced containment of the whole session, which dynamic mode requires; see [Isolation](#isolation). |
+| `network` | `true`, `false` | none | Whether the session can reach the network; dynamic mode requires `false`. |
+| `credentials` | `true`, `false` | none | Whether the session holds credentials; dynamic mode requires `false`. |
+| `reproEnvironment` | object, see [Reproduction environment](#reproduction-environment) | none | A typed descriptor of the pre-built execution environment, so dynamic scans need no hand-edited workflow script. Its fields are checked by the workflow. |
 | `reproMinSeverity` | `"critical"`, `"high"`, `"medium"`, `"low"` | none | Reproduce only verified findings at or above this severity, by the verifiers' own severity opinions. |
-| `models`, `efforts` | per-stage map | see below | Model and effort per stage. |
-| `allowSparse`, `allowLfsPointers` | `true`, `false` | `false` | Accept a sparse checkout or LFS pointers in a scan that is not strict. |
-| `runId` | string, not ending in a dot, not a Windows device name | derived | Run folder name when there is no attestation; an attestation's own `runId` always wins. |
+| `models` | per-stage map | see below | Model per stage. |
+| `efforts` | per-stage map | see below | Effort per stage. |
+| `allowSparse` | `true`, `false` | `false` | Accept a sparse checkout in a scan that is not strict. Not accepted by `/vuln-hunt:scan`, whose scans are always strict and attested. |
+| `allowLfsPointers` | `true`, `false` | `false` | Accept LFS pointers in a scan that is not strict. Not accepted by `/vuln-hunt:scan`, whose scans are always strict and attested. |
+| `runId` | string, not ending in a dot, not a Windows device name | derived | Run folder name when there is no attestation; an attestation's own `runId` always wins. Not accepted by `/vuln-hunt:scan`, whose scans are always strict and attested. |
 | `tag` | string | none | A free-form label copied into the result. |
+<!-- vuln-hunt-options:end -->
 
 Research and verification stages inherit your `/model`. The report and the fallback inventory default to Sonnet,
 and the freshness check to Sonnet at `low` effort. Override per stage:
@@ -750,7 +777,8 @@ claude plugin validate --strict .
 The suite covers the helper's Git and runtime checks, executable and environment poisoning, dirty-tree and
 index-flag detection, freshness and postflight drift, range parsing and evidence, `--emit-run` transport and its
 ordering guarantees, the citation, report and prior-finding validation modes, policy-document binding, citation
-handling, option validation, the concurrency gate, ledger and recovery behavior, worker routing and fallback,
+handling, option validation, argument resolution for `/vuln-hunt:scan` and its agreement with the workflow's own
+option checks, the concurrency gate, ledger and recovery behavior, worker routing and fallback,
 the agent files staying in step with `vuln-hunt-agents.json`, the launcher's arguments, the installer (Windows
 only) and `SHA256SUMS.txt`. CI runs it on Windows and Ubuntu and validates the plugin. `.gitattributes` keeps
 every checkout LF, so `sha256sum -c SHA256SUMS.txt` works anywhere.

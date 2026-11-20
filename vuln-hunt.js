@@ -24,7 +24,9 @@ const STAGE_KEYS=["default","inventory","freshness","recon","hunt","continuation
 // dots from a path segment, so "." and ".." (which would leave the namespace)
 // and any name ending in a dot are refused, as are names Windows maps to a
 // device whatever their extension. Keep identical to RUN_ID_RE in
-// vuln-hunt-attest.js.
+// vuln-hunt-attest.js and vuln-hunt-options.js. ARG_KEYS, BOOL_ARGS,
+// STAGE_KEYS and the checks in argError describe the same options as
+// vuln-hunt-options.js, which tests/options.js holds them to.
 const RUN_ID_RE=/^(?!.*\.$)(?!(?:con|prn|aux|nul|com\d|lpt\d)(?:\.|$))[A-Za-z0-9._-]{1,96}$/i;
 // A typed descriptor for the execution environment dynamic reproduction runs
 // in. Every field is bounded and passed through as structured data; nothing
@@ -66,8 +68,10 @@ function safePathLength(p){return typeof p==="string"&&p.length>0&&p.length<=409
 const range=a.range||null,dynamic=a.mode==="dynamic",models=a.models||{},efforts=a.efforts||{},att=a.attestation||null,candidateCap=a.candidateCap??3,salvageRisk=a.salvageRisk??"high";
 // Refs cannot contain "..", so a range splits at its first separator exactly
 // once; A..B..C is malformed rather than A..B.
+// Keep RANGE_RE identical to the one in vuln-hunt-options.js.
+const RANGE_RE=/^[A-Za-z0-9][A-Za-z0-9._~^/@:+{}-]*(?:\.{2,3}[A-Za-z0-9][A-Za-z0-9._~^/@:+{}-]*)?$/;
 const rangeSplit=/^(.*?)(\.{2,3})(.*)$/s.exec(range||"");
-if(range&&(!/^[A-Za-z0-9][A-Za-z0-9._~^/@:+{}-]*(?:\.{2,3}[A-Za-z0-9][A-Za-z0-9._~^/@:+{}-]*)?$/.test(range)||(rangeSplit&&(!rangeSplit[1]||!rangeSplit[3]||rangeSplit[3].startsWith(".")||rangeSplit[3].includes("..")))))return{error:"range must be REF, A..B or A...B with normal git refs: no spaces, shell syntax, leading option characters or extra .. separators"};
+if(range&&(!RANGE_RE.test(range)||(rangeSplit&&(!rangeSplit[1]||!rangeSplit[3]||rangeSplit[3].startsWith(".")||rangeSplit[3].includes("..")))))return{error:"range must be REF, A..B or A...B with normal git refs: no spaces, shell syntax, leading option characters or extra .. separators"};
 if(dynamic&&!(containments.has(a.containment)&&a.network===false&&a.credentials===false))return{error:"dynamic mode requires an externally enforced whole-session containment assertion: containment must be sandbox-runtime, container, vm, or cloud-session, with network:false and credentials:false. Claude Code built-in Bash sandbox alone does not qualify"};
 if(a.strictProvenance===true&&!att)return{error:"strictProvenance requires an external attestation; run vuln-hunt-attest.js first and pass its JSON as args.attestation"};
 if(range&&!att)return{error:"range review requires external attestation so clean working-tree state and the reviewed endpoint are checked outside the model; run vuln-hunt-attest.js --range first"};

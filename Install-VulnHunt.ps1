@@ -34,7 +34,8 @@ $prereqSrc=Join-Path $PSScriptRoot 'Test-VulnHuntPrereqs.ps1'
 $postflightSrc=Join-Path $PSScriptRoot 'Compare-VulnHuntPostflight.ps1'
 $agentsSrc=Join-Path $PSScriptRoot 'vuln-hunt-agents.json'
 $launchSrc=Join-Path $PSScriptRoot 'vuln-hunt-launch.js'
-foreach($p in @($workflowSrc,$attestSrc,$wrapperSrc,$prereqSrc,$postflightSrc,$agentsSrc,$launchSrc)){if(-not(Test-Path -LiteralPath $p)){throw "Missing package file: $p"}}
+$optionsSrc=Join-Path $PSScriptRoot 'vuln-hunt-options.js'
+foreach($p in @($workflowSrc,$attestSrc,$wrapperSrc,$prereqSrc,$postflightSrc,$agentsSrc,$launchSrc,$optionsSrc)){if(-not(Test-Path -LiteralPath $p)){throw "Missing package file: $p"}}
 $nodeCmd=Get-TrustedApplication 'node'
 if(-not $nodeCmd){throw 'Node.js was not found on PATH. Strict provenance requires the bundled Node attestation helper.'}
 try{
@@ -77,6 +78,7 @@ Copy-Item -LiteralPath $prereqSrc -Destination (Join-Path $toolDir 'Test-VulnHun
 Copy-Item -LiteralPath $postflightSrc -Destination (Join-Path $toolDir 'Compare-VulnHuntPostflight.ps1') -Force
 Copy-Item -LiteralPath $agentsSrc -Destination (Join-Path $toolDir 'vuln-hunt-agents.json') -Force
 Copy-Item -LiteralPath $launchSrc -Destination (Join-Path $toolDir 'vuln-hunt-launch.js') -Force
+Copy-Item -LiteralPath $optionsSrc -Destination (Join-Path $toolDir 'vuln-hunt-options.js') -Force
 # User-level copies of the worker agents let /vuln-hunt run in an ordinary session; vuln-hunt-launch.js passes the same definitions with --agents instead.
 $agentDir=Join-Path $claude 'agents'
 New-Item -ItemType Directory -Force $agentDir|Out-Null
