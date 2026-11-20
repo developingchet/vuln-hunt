@@ -1,7 +1,11 @@
 [CmdletBinding()]
 param(
   [Parameter(Mandatory=$true)][string]$BeforeFile,
-  [string]$Range
+  [string]$Range,
+  # One per policy document the attestation was produced with; --compare
+  # recomputes the state hash over them, so omitting one reports a false
+  # policyDocs mismatch.
+  [string[]]$PolicyDoc
 )
 $ErrorActionPreference='Stop'
 # Executables are resolved before Git can name the top level, so every ancestor holding a .git entry bounds repository-controlled content, as does the main checkout named by a linked worktree's .git file.
@@ -44,6 +48,7 @@ $before=(Resolve-Path -LiteralPath $BeforeFile).Path
 $node=Get-TrustedApplication 'node'
 $argsList=@($helper)
 if($Range){$argsList+=@('--range',$Range)}
+if($PolicyDoc){foreach($doc in $PolicyDoc){$argsList+=@('--policy-doc',$doc)}}
 $argsList+=@('--compare',$before)
 $json=& $node.Source @argsList
 $code=$LASTEXITCODE

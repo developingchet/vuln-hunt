@@ -27,7 +27,8 @@ vuln-hunt answers both:
 
 - **Scope is computed, not claimed.** A helper script reads the exact file list from Git, outside any model, and
   splits it into work units. Every unit must be assigned, and every unit's outcome is reported. A unit counts as
-  reviewed only when the researcher cites lines inside it.
+  reviewed only when the researcher cites lines inside it, enough of them for its size, and the citations are
+  mechanically checked against the real files and line counts.
 - **Findings are verified independently.** Each candidate goes to separate verifiers that check reachability,
   impact and existing defenses on their own, each with citations. Only a candidate the panel confirms is
   reported as a finding.
@@ -60,8 +61,12 @@ flowchart TD
 1. **Attest.** `vuln-hunt-attest.js` reads the tracked and untracked files from Git, hashes their bytes, and
    splits them into at most 24 work units in a fixed, repeatable order. The result is the attestation: a JSON
    record of exactly what the scan covers. With a range such as `main...HEAD`, it also records the change.
+   `--emit-run` writes the attestation, plus a generated workflow script with the attestation embedded verbatim,
+   into a private directory outside the repository, so it reaches the workflow by file path instead of through
+   the session's model.
 2. **Check freshness.** Before any research starts, the helper runs again and its fingerprint must match the
-   attestation. A tree edited, pulled or switched since step 1 stops the scan.
+   attestation. A tree edited, pulled or switched since step 1 stops the scan. After the report, the check runs
+   once more, and a tree that changed during the scan is flagged in the result.
 3. **Recon.** A researcher builds a threat model of the repository and assigns every unit to a hunter portfolio
    or skips it with a reason.
 4. **Hunt.** Up to six hunters work in parallel, each on its portfolio, and return candidate root causes with
@@ -69,8 +74,12 @@ flowchart TD
    did not reach, and a sweep looks for bugs that cross portfolio boundaries.
 5. **Verify.** Each candidate goes to verifiers that judge reachability, impact and defenses independently. Two
    cited false-positive votes reject it early; three true-positive votes verify it; a full panel with two
-   true-positive votes goes to a fresh adjudicator. Anything else stays unresolved or rejected.
-6. **Report.** The reporter writes the verified findings and the coverage table to `.vuln-hunt/runs/<runId>/`.
+   true-positive votes goes to a fresh adjudicator. A vote that never returns is retried once, and a panel that
+   still cannot complete is recorded as unresolved by infrastructure, never as a clean verdict. Every citation
+   the researchers and verifiers produced is then checked mechanically against the real manifest and the real
+   line counts, and a citation that fails cannot support a verdict or a coverage receipt.
+6. **Report.** The reporter writes the verified findings and the coverage table to `.vuln-hunt/runs/<runId>/`,
+   and the written files are mechanically validated against the run's ledger before the result is returned.
 
 ## Installation
 
@@ -183,14 +192,19 @@ Open Claude Code at the repository's root and run:
 /vuln-hunt:scan
 ```
 
-The skill runs the attestation helper, then starts the workflow with the attestation and `strictProvenance`.
-Claude Code shows the workflow's plan for approval before it runs
+The skill runs the attestation helper with `--emit-run`, which writes a private run directory outside the
+repository holding the attestation and a generated workflow script with the attestation embedded byte-for-byte,
+then starts the workflow from that script's path with `strictProvenance`. The attestation never passes through
+the session's model, so a large or array-heavy attestation cannot be reordered or mangled in transit. Claude Code
+shows the workflow's plan for approval before it runs
 ([approve the plan](https://code.claude.com/docs/en/workflows#approve-the-plan-before-it-runs)). When it
 finishes, read `.vuln-hunt/runs/<runId>/vuln-hunt-report.md`.
 
 Strict provenance needs a clean checkout: commit or stash changes first. The skill runs the first `node` on
 `PATH`; the helper then refuses to continue if that Node, or the helper itself, lives inside the repository being
-scanned.
+scanned. The generated run script stays on disk until you delete it, so an interrupted run can be resumed:
+call the Workflow tool again with the same `scriptPath` and the interrupted run's `resumeFromRunId`; the script
+path alone starts a fresh run.
 
 ### Review a change
 
@@ -199,12 +213,9 @@ scanned.
 ```
 
 The checkout must be clean and at the range's head. Researchers see the changed hunks and removed lines from the
-attestation, and read added lines from the checkout.
-
-The skill passes the attestation to the workflow through the session's model. A whole-tree attestation is a
-few kilobytes; a range adds the removed lines, up to 256 KB, so a large change costs more tokens. A copy that
-differs from the helper's output fails the state-hash check and the run is refused, never scanned with altered
-evidence. For very large changes, review smaller ranges or [run the workflow directly](#running-the-workflow-directly).
+attestation, and read added lines from the checkout. The change evidence (up to 256 files, 16 KiB of removed
+lines per file, 256 KiB overall) is embedded in the generated run script, so its size costs no conversation
+context; for very large changes, review smaller ranges to keep the workflow's own argument handling small.
 
 | Range | Reviewed change |
 |---|---|
@@ -270,7 +281,7 @@ flowchart LR
 
     Skill -- "runs" --> Helper
     Helper -- "reads" --> Git
-    Skill -- "attestation as args" --> WF
+    Skill -- "generated run script" --> WF
     WF -- "dispatches every stage to" --> Agents
     Agents -- "mechanic re-runs" --> Helper
     Agents -- "researchers read" --> Git
@@ -371,11 +382,13 @@ left out takes its default.
 
 | Option | Values | Default | Effect |
 |---|---|---|---|
-| `attestation` | helper output | none | The attestation; required by `strictProvenance` and `range`. |
+| `attestation` | helper output | none | The attestation; required by `strictProvenance` and `range`. `/vuln-hunt:scan` embeds it in a generated run script instead of passing it here. |
 | `strictProvenance` | `true`, `false` | `false` | Refuse anything short of an attested, clean, fully hydrated checkout. |
 | `range` | `A..B`, `A...B`, `REF` | none | Review a change instead of the whole tree. |
 | `hunters` | 2–6, `"auto"` | 4 | Most hunter portfolios recon may create. |
 | `candidateCap` | 1–6 | 3 | Most candidates per hunter; a hunter that hits it is listed in `candidateSaturation`. |
+| `maxConcurrentAgents` | 1–256 | runtime's own limit | Ceiling on agents this one run dispatches at once, across every stage, panels and retries included. Admission is first-in-first-out, and a failed agent releases its slot. |
+| `policyDocs` | 1–8 paths | none | Repository security-policy documents to read as untrusted evidence; each must have been attested with `--policy-doc`. |
 | `salvage` | `true`, `false` | `true` | Revisit units a hunter did not reach, at or above `salvageRisk`. |
 | `salvageRisk` | `"high"`, `"medium"`, `"all"` | `"high"` | Lowest unit risk salvage covers. |
 | `sweep` | `true`, `false` | `true` | Look for bugs across portfolio boundaries; never upgrades unit coverage. |
@@ -384,9 +397,11 @@ left out takes its default.
 | `variants` | `true`, `false` | `false` | List other affected sites of verified roots. |
 | `mode` | `"static"`, `"dynamic"` | `"static"` | `"dynamic"` adds contained reproduction. |
 | `containment`, `network`, `credentials` | see [Isolation](#isolation) | none | Assertions dynamic mode requires. |
+| `reproEnvironment` | object, see [Reproduction environment](#reproduction-environment) | none | A typed descriptor of the pre-built execution environment, so dynamic scans need no hand-edited workflow script. |
+| `reproMinSeverity` | `"critical"`, `"high"`, `"medium"`, `"low"` | none | Reproduce only verified findings at or above this severity, by the verifiers' own severity opinions. |
 | `models`, `efforts` | per-stage map | see below | Model and effort per stage. |
 | `allowSparse`, `allowLfsPointers` | `true`, `false` | `false` | Accept a sparse checkout or LFS pointers in a scan that is not strict. |
-| `runId` | string | derived | Run folder name when there is no attestation; an attestation's own `runId` always wins. |
+| `runId` | string, not `.` or `..` | derived | Run folder name when there is no attestation; an attestation's own `runId` always wins. |
 | `tag` | string | none | A free-form label copied into the result. |
 
 Research and verification stages inherit your `/model`. The report and the fallback inventory default to Sonnet,
@@ -400,25 +415,32 @@ and the freshness check to Sonnet at `low` effort. Override per stage:
 ```
 
 Stages are `recon`, `hunt`, `continuation`, `salvage`, `sweep`, `verify` (or one panel seat:
-`verifyReachability`, `verifyImpact`, `verifyDefenses`), `adjudicate`, `variants`, `repro`, `report`, `inventory`
+`verifyReachability`, `verifyImpact`, `verifyDefenses`), `adjudicate`, `variants`, `repro`, `validate` (the
+mechanical citation, report and prior-run checks), `report`, `inventory`
 and `freshness`, plus `default`. The result records the requested routing; Claude Code's workflow
 details show the model actually served.
 
 ### Running the workflow directly
 
-`/vuln-hunt:scan` covers the usual case. To control each step, attest from the repository root for every run:
+`/vuln-hunt:scan` covers the usual case. To control each step, generate a run from the repository root for every
+scan:
 
 ```bash
-node "<plugin folder>/vuln-hunt-attest.js"                 # whole tree
-node "<plugin folder>/vuln-hunt-attest.js" --range main...HEAD
+node "<plugin folder>/vuln-hunt-attest.js" --emit-run                  # whole tree
+node "<plugin folder>/vuln-hunt-attest.js" --emit-run --range main...HEAD
+node "<plugin folder>/vuln-hunt-attest.js" --emit-run --policy-doc SECURITY.md
 ```
 
-and run `/vuln-hunt:vuln-hunt` with `args` such as
-`{"strictProvenance": true, "attestation": <helper output>, "hunters": 4}`.
+The helper prints one line of JSON naming the private run directory. Run the `vuln-hunt:vuln-hunt` workflow with
+the `scriptPath` it names and `args` such as `{"strictProvenance": true, "hunters": 4}`; the attestation is
+already embedded in that script, byte-exact. Passing the attestation as `args.attestation` also still works for
+small attestations: the workflow recomputes its state hash and refuses any copy that differs from the helper's
+output.
 
 Without an attestation, a whole-tree scan that is not strict still runs: a Sonnet inventory agent lists and
 partitions the files, and provenance is labeled `MODEL_REPORTED_PROVENANCE`. That mode is weaker and should not be
-relied on for coverage claims.
+relied on for coverage claims; mechanical citation validation is unavailable without an attestation and is
+reported as such.
 
 ### The attestation
 
@@ -437,6 +459,7 @@ It records:
   the tree DIRTY
 - sparse, shallow and partial-clone state, Git filters, grafts and object alternates
 - case collisions, LFS pointers and the safety of the output path
+- each policy document named with `--policy-doc`, hashed over its bytes and bound into `stateHash`
 - for a change review: the endpoints, the changed files and, per file, its status, modes, rename source, hunk
   coordinates and removed lines (up to 256 files, 16 KiB per file and 256 KiB overall)
 - `stateHash` over all of it, and the `helperPath` and `nodePath` the freshness check runs again
@@ -444,17 +467,23 @@ It records:
 Units use bytewise UTF-8 order, so Windows and Linux split the same paths the same way.
 
 The attestation is not signed; anyone can edit JSON. It is an independently computed record, meant to go
-straight from the helper to the workflow, which recomputes `stateHash` and refuses any mismatch.
+straight from the helper to the workflow, which recomputes `stateHash` and refuses any mismatch. Version 5 adds
+`policyDocs`; the workflow still accepts a version-4 attestation that has none, but only while the attested
+helper is still the copy that produced it — after a plugin update, regenerate the attestation, since the
+upgraded helper hashes a longer field list.
 
 ### Freshness and postflight
 
-Before recon, the mechanic worker runs the attested helper with the attested Node as `--fingerprint <runId>`. The
-helper recomputes the attestation and prints its `stateHash`. The workflow refuses the run unless the root,
-`HEAD`, worktree state, file list, content and state hashes all match and `.vuln-hunt/runs/<runId>` does not exist
-yet. Neither check can stop a concurrent writer during the run; use a disposable clone or worktree for measured
-runs.
+Before recon, the mechanic worker runs the attested helper with the attested Node as `--fingerprint <runId>`,
+repeating the attested `--policy-doc` list. The helper recomputes the attestation and prints its `stateHash`.
+The workflow refuses the run unless the root, `HEAD`, worktree state, file list, content and state hashes all
+match and `.vuln-hunt/runs/<runId>` does not exist yet. After the report is written, the same fingerprint runs
+once more; if the source state no longer matches, the result carries `sourceChangedDuringRun: true` prominently
+instead of silently presenting stale citations. Neither check can stop a concurrent writer during the run; use a
+disposable clone or worktree for measured runs.
 
-To confirm nothing changed during a run, save the attestation outside the repository and compare afterwards:
+To confirm nothing changed during a run by hand, save the attestation outside the repository and compare
+afterwards:
 
 ```bash
 node "<plugin folder>/vuln-hunt-attest.js" > /tmp/vuln-hunt-before.json
@@ -462,33 +491,126 @@ node "<plugin folder>/vuln-hunt-attest.js" > /tmp/vuln-hunt-before.json
 node "<plugin folder>/vuln-hunt-attest.js" --compare /tmp/vuln-hunt-before.json
 ```
 
-Pass the same `--range` to both for a change review. On Windows, `Compare-VulnHuntPostflight.ps1 -BeforeFile
-<file>` does the same from PowerShell 5.1 or 7.3+.
+Pass the same `--range` and `--policy-doc` list to both for a change review. On Windows,
+`Compare-VulnHuntPostflight.ps1 -BeforeFile <file>` does the same from PowerShell 5.1 or 7.3+, with `-Range` and
+a repeatable `-PolicyDoc` for the same purpose.
+
+### Policy documents
+
+`policyDocs` names repository files — a `SECURITY.md`, a threat model, an authorization spec — whose claims the
+researchers and verifiers check the code against:
+
+```text
+/vuln-hunt:scan {"policyDocs":["SECURITY.md"],"maxConcurrentAgents":3}
+```
+
+Each document must be attested: the scan skill passes it to the helper with `--policy-doc`, which requires it to
+be in the manifest, refuses symlinks, and hashes its bytes into `stateHash`, so a document edited after
+attestation stops the scan. Every research and verification prompt then carries the document with fixed
+instructions: extract its explicit guarantees, trust boundaries and defaults; a claim the code contradicts is
+evidence for a finding, cited against both the policy line and the source line; a vulnerability the documents
+never mention is still valid and still reported; In-Scope/Out-of-Scope lists are disclosure-program metadata
+only, so a technically valid out-of-scope finding stays in the report, labeled as outside the program's scope.
+Severity follows the boundary a contradicted claim describes, not the mere fact of a documentation mismatch.
 
 ### Coverage states
 
 | State | Meaning |
 |---|---|
-| `deep-reviewed` | its hunter reported it reached and cited lines inside it |
-| `receipt-missing` | reported reached without a valid citation inside it |
+| `deep-reviewed` | its hunter reported it reached, cited lines inside it, and the receipts are enough for its size |
+| `receipt-thin` | reached with citations, but fewer than the unit needs (up to 8, scaled from one per 25 files) |
+| `receipt-missing` | reported reached without a valid citation inside it, or all receipts failed mechanical validation |
 | `not-reached` | its hunter reported it was not reached, with a reason |
 | `coverage-conflict` | reported both reached and not reached |
 | `unaccounted-by-hunter` | its hunter returned without mentioning it |
 | `failed` | its hunter returned nothing |
-| `gap-reviewed` | the salvage pass reached it and cited lines inside it |
+| `gap-reviewed` | the salvage pass reached it and cited lines inside it, enough for its size |
 | `skipped` | recon skipped it, with a reason |
+| `unaccounted` | no stage recorded any state for it; a bug, not a coverage claim |
 
-`deep-reviewed` is the researcher's evidence, not proof that every file was read.
+After the panels, every researcher and verifier citation is checked mechanically with
+`--validate-citations`: the file must be in the attested manifest and a regular file, and the line must exist.
+A citation that fails is dropped from its vote and its receipt. The result's `citationsValidated` reports the
+outcome: `not-needed` (the scan produced no citations), `validated`, `partial` (more than 4096 citations),
+`transport-failed` (the check could not run, so no coverage claim is treated as mechanically confirmed), or
+`unavailable-no-attestation`.
+
+`deep-reviewed` and `gap-reviewed` remain the researcher's own accounting for which files were read; mechanical
+validation confirms the citations point at real lines, not that every line was inspected.
 
 ### Verification rules
 
-Each candidate gets a fixed `candidateId`. Before verification, duplicates are merged only when `rootKey`, file,
-symbol and mechanism all match exactly. Grouping by `rootKey` in the report is a reading aid: do not count groups
-as unique root causes.
+Each candidate gets a fixed `candidateId` plus a deterministic `findingId`, a SHA-256 over its location and
+wording. Both are per-run values: the same root cause can carry a different `candidateId` in another run, and an
+unrelated vulnerability can reuse the same one. Never compare findings across runs by `candidateId` alone; see
+[Cross-run reconciliation](#cross-run-reconciliation).
 
 A true-positive vote needs complete source, path, sink, defense and gain reasoning and at least two valid
-citations. False-positive and predates-the-change votes need cited refutation, and predates-the-change counts only
-in a change review. Malformed votes count as unknown.
+citations. False-positive and predates-the-change votes need cited refutation, and predates-the-change counts
+only in a change review. Malformed votes count as unknown.
+
+A candidate's final disposition is one of:
+
+| Disposition | Meaning |
+|---|---|
+| `VERIFIED` | three true-positive votes, or two plus a fresh adjudicator's confirmation |
+| `REJECTED` | two decisive false-positive votes, or a full panel with two or more |
+| `PREDATES_CHANGE` | a change review where the flaw predates the reviewed change |
+| `UNRESOLVED_EVIDENCE` | the panel completed but the evidence did not settle the question |
+| `UNRESOLVED_INFRASTRUCTURE` | one or more votes never returned, even after a bounded recovery pass |
+| `NOT_REACHED` | the candidate's panel task itself failed |
+
+A vote that returns nothing is asked once more immediately and once more in a recovery pass that retries only the
+missing seats; a failure the runtime reports as rate limiting gets one paced retry through the concurrency gate.
+A panel that still cannot complete is `UNRESOLVED_INFRASTRUCTURE` with its missing seats named — never verified,
+never rejected. Infrastructure failures never become verdicts.
+
+### Cross-run reconciliation
+
+Before the report, the helper's `--prior-findings` reads every earlier run's `findings.jsonl` under
+`.vuln-hunt/runs/`, and each verified finding is related to them:
+
+- `REPRODUCED_AGAIN`: the same `findingId` was verified in an earlier run.
+- `TENTATIVE_MATCH`: the same file and symbol within 10 lines, but the mechanism was worded differently; confirm
+  by hand before treating it as the same root cause.
+- `NEW`: no match.
+- `NOT_REASSESSED`: a prior finding with no counterpart in this run. Absence from a later scan is never treated
+  as evidence of remediation; a failed reproduction is never treated as proof of a false positive.
+
+The relations and counts appear in the workflow's result and in the report, with the prior run names.
+
+### Reproduction environment
+
+Dynamic mode without an environment descriptor leaves reproduction to the default agent inside the asserted
+containment boundary. `reproEnvironment` replaces that with a typed descriptor of a pre-built environment, so
+no workflow script needs hand editing:
+
+```text
+/vuln-hunt:scan {"mode":"dynamic","containment":"container","network":false,"credentials":false,"reproEnvironment":{"backend":"container","image":"registry.example/target@sha256:...","sourceLocation":"/repo","runtimeCapabilities":["python3.13"],"testEntrypoints":["pytest -q tests/"],"instructions":"dependencies are pre-installed; no network","timeoutMs":600000,"verifiedReady":true},"reproMinSeverity":"high","maxConcurrentAgents":3}
+```
+
+| Field | Values | Notes |
+|---|---|---|
+| `backend` | `"container"`, `"vm"` | Required. |
+| `image` | immutable identifier | Required for a container: a digest or tag, 1–512 characters. |
+| `sourceLocation`, `workingDirectory`, `artifactsDir` | location string | Where the source, the work and the artifacts live inside the environment. |
+| `runtimeCapabilities` | up to 8 short names | Runtimes present, e.g. `python3.13`. A finding whose runtime is absent is reported as blocked, not silently skipped. |
+| `testEntrypoints` | up to 8 commands | Existing test entrypoints to prefer over ad-hoc reproducers. |
+| `instructions` | string, ≤ 4000 characters | Environment-specific notes; passed as untrusted data, never executed as instructions. |
+| `resourceLimits` | `cpu`, `memory`, `pids` | Short strings the repro agent reads as descriptors. |
+| `timeoutMs` | 1000–3600000 | Per-reproduction budget. |
+| `verifiedReady` | boolean | The operator's assertion that the environment exists and works; recorded, not trusted. |
+
+A reproduction reports `REPRODUCED` only when the specific vulnerable execution path was reached with
+attacker-controlled input and the security effect was observed. A generic test suite that merely passes is
+environment readiness and is returned as `NOT_REPRODUCED`, never as a reproduction. Other statuses —
+`BLOCKED_NO_REPRO_ENVIRONMENT`, `BLOCKED_MISSING_DEPENDENCY`, `BLOCKED_UNSUPPORTED_PLATFORM`, `TIMEOUT`,
+`INFRASTRUCTURE_FAILED`, `NOT_ATTEMPTED` — keep per-finding evidence honest, and a failed reproduction never
+refutes a statically verified finding by itself.
+
+The workflow cannot verify a container's isolation itself. Keep the externally enforced boundary
+(`containment`, `network:false`, `credentials:false`), prefer an image with the source baked in over host
+mounts, and never mount credentials, sockets or home directories into it; see [Isolation](#isolation).
 
 ```mermaid
 flowchart TD
@@ -544,16 +666,28 @@ or its Node runtime sits under such a root. The launcher and the PowerShell wrap
 .vuln-hunt/runs/<runId>/coverage.jsonl        one work unit per line
 ```
 
-Each line of `findings.jsonl` has at least `candidateId`, `severity` (`critical`, `high`, `medium` or `low`) and
-`evidence`. Rejected and unresolved candidates stay in the workflow's returned result. `.vuln-hunt/.gitignore`
-holds `*`, so run folders are never committed. The reporter refuses to overwrite a tracked file, follow a link or
-reuse a run folder. If it cannot write, the workflow still returns its result with a `reportWarning`, or with a
+Each line of `findings.jsonl` has at least `candidateId`, `severity` (`critical`, `high`, `medium` or `low`),
+`evidence`, `findingId` and `relation` (`REPRODUCED_AGAIN`, `TENTATIVE_MATCH` or `NEW`). Rejected and unresolved
+candidates stay in the workflow's returned result, never in `findings.jsonl`. `.vuln-hunt/.gitignore` holds `*`,
+so run folders are never committed. The reporter refuses to overwrite a tracked file, follow a link or reuse a
+run folder. If it cannot write, the workflow still returns its result with a `reportWarning`, or with a
 `reportError` when the reporter agent is not available.
+
+What the workflow returns is deliberately small: the run identity, report paths, verified/rejected/unresolved
+counts by category, the coverage summary, saturation, reconciliation counts, the report-validation verdict and
+`sourceChangedDuringRun`, plus a per-candidate and per-unit ledger of statuses. Ballots, receipts and vote text
+live in the report artifacts, not in the conversation. After the reporter claims the files are written, the
+helper's `--validate-report` checks them mechanically — files present, JSONL parseable, candidate and unit IDs
+reconciled against the run's ledger — and a mismatch is reported, never assumed away.
 
 ## Limits and cost
 
 - A scan is only as thorough as the model's reading. Coverage receipts are its evidence, not proof that it read
-  every line, and `rootKey` grouping is not a proof that two findings share a root cause.
+  every line, and `rootKey` grouping is not a proof that two findings share a root cause. Mechanical citation
+  validation proves a citation points at a real line, not that the line was studied.
+- Cross-run identity is heuristic: `findingId` matches only when a rerun words the mechanism the same way, so a
+  `TENTATIVE_MATCH` needs a human eye, and a prior finding absent from a later run is `NOT_REASSESSED`, never
+  fixed.
 - Results have been checked on a small set of open-source repositories in Python, JavaScript/TypeScript, Go and
   Ruby, including recovering a known advisory published after the model's training cutoff and not reporting it in
   the fixed revision. Recall and false-positive rates have not been measured.
@@ -586,10 +720,12 @@ claude plugin validate --strict .
 ```
 
 The suite covers the helper's Git and runtime checks, executable and environment poisoning, dirty-tree and
-index-flag detection, freshness and postflight drift, range parsing and evidence, citation handling, option
-validation, worker routing and fallback, the agent files staying in step with `vuln-hunt-agents.json`, the
-launcher's arguments, the installer (Windows only) and `SHA256SUMS.txt`. CI runs it on Windows and Ubuntu and
-validates the plugin. `.gitattributes` keeps every checkout LF, so `sha256sum -c SHA256SUMS.txt` works anywhere.
+index-flag detection, freshness and postflight drift, range parsing and evidence, `--emit-run` transport and its
+ordering guarantees, the citation, report and prior-finding validation modes, policy-document binding, citation
+handling, option validation, the concurrency gate, ledger and recovery behavior, worker routing and fallback,
+the agent files staying in step with `vuln-hunt-agents.json`, the launcher's arguments, the installer (Windows
+only) and `SHA256SUMS.txt`. CI runs it on Windows and Ubuntu and validates the plugin. `.gitattributes` keeps
+every checkout LF, so `sha256sum -c SHA256SUMS.txt` works anywhere.
 
 ## Security
 

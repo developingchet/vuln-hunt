@@ -91,6 +91,14 @@ Dynamic reproduction runs target code, so the workflow requires the operator to 
 must be `false`. This is the operator's assertion. The workflow cannot check the VM, container or session
 configuration.
 
+A `reproEnvironment` option describes a pre-built execution environment so reproduction needs no hand-edited
+workflow script; it is a descriptor, not a boundary. `verifiedReady` is likewise the operator's assertion and is
+recorded, never trusted. The boundary rules above still apply, and a descriptor that asks for host mounts,
+credential paths or a Docker socket contradicts the boundary and should not be used. Prefer an image with the
+target source baked in: a runtime mount over the image's prepared source both obscures it and reintroduces host
+content into the execution boundary. A container with no host mounts can still hold secrets inherited from its
+image or build process; treat image provenance as part of the boundary.
+
 ## Prompt injection and isolation
 
 Isolation and prompt-injection resistance solve different problems:
