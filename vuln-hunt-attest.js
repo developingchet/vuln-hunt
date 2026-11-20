@@ -143,6 +143,13 @@ function rev(ref){const s=text(git(['rev-parse','--verify',`${ref}^{commit}`]));
 // report and prior-run checks are computed by this trusted helper rather
 // than judged by a model. Each reads the repository only; none writes it.
 function readJsonArg(p,what){const raw=fs.readFileSync(path.resolve(p),'utf8').replace(/^﻿/,'');try{return JSON.parse(raw)}catch{throw new Error(`${what} is not valid JSON: ${p}`)}}
+// Repository-controlled paths are validated and read through one file
+// descriptor: the regular-file check and the read use the same fd, so a path
+// swap between a stat and a by-name read cannot win. On POSIX O_NOFOLLOW
+// refuses a symlinked path outright; creating a symlink on Windows already
+// needs a privilege, and opening a directory fails either way.
+const openRepoFile=p=>fs.openSync(p,process.platform==='win32'?'r':(fs.constants.O_RDONLY|fs.constants.O_NOFOLLOW));
+const isSymlinkErr=e=>e&&['ELOOP','EISDIR','EPERM'].includes(e.code);
 const canonCitations=cs=>JSON.stringify((Array.isArray(cs)?cs:[]).map(c=>c&&typeof c==='object'?[String(c.file),Number(c.line),c.endLine==null?null:Number(c.endLine)]:null));
 if(validateCitationsPath){
   const input=readJsonArg(validateCitationsPath,'--validate-citations input');
@@ -150,15 +157,20 @@ if(validateCitationsPath){
   const manifestSet=new Set(zlist(git(['ls-files','--cached','--others',...untrackedFilter,'-z']).stdout));
   const bad=(file,line,endLine,reason)=>({file,line,endLine:endLine??null,reason});
   const invalid=[],lineCounts=Object.create(null);
-  const countLines=p=>{const fd=fs.openSync(p,'r'),buf=Buffer.alloc(1<<20);let n=0,bytes=0,last=-1;try{for(let r;(r=fs.readSync(fd,buf,0,buf.length,null))>0;){bytes+=r;last=buf[r-1];for(let i=0;i<r;i++)if(buf[i]===10)n++}}finally{fs.closeSync(fd)}return bytes===0?0:last===10?n:n+1};
+  const countLines=fd=>{const buf=Buffer.alloc(1<<20);let n=0,bytes=0,last=-1;for(let r;(r=fs.readSync(fd,buf,0,buf.length,null))>0;){bytes+=r;last=buf[r-1];for(let i=0;i<r;i++)if(buf[i]===10)n++}return bytes===0?0:last===10?n:n+1};
   for(const c of input){
     const line=Number(c.line),endLine=c.endLine==null?null:Number(c.endLine);
     if(!safeRel(c.file)){invalid.push(bad(c.file,line,c.endLine,'path is absolute, backslashed, or contains .. or a control character'));continue}
     if(!manifestSet.has(c.file)){invalid.push(bad(c.file,line,c.endLine,'not in the attested manifest'));continue}
-    const abs=path.resolve(cwd,c.file);let st;try{st=fs.lstatSync(abs)}catch{invalid.push(bad(c.file,line,c.endLine,'unreadable'));continue}
-    if(st.isSymbolicLink()||!st.isFile()){invalid.push(bad(c.file,line,c.endLine,'not a regular file (symlink, submodule or directory)'));continue}
-    if(lineCounts[c.file]===undefined)lineCounts[c.file]=countLines(abs);
-    const lines=lineCounts[c.file];
+    if(lineCounts[c.file]!==undefined){const lines=lineCounts[c.file];if(lines===0||line>lines||(endLine!==null&&endLine>lines))invalid.push(bad(c.file,line,c.endLine,`line beyond the file's ${lines} line(s)`));continue}
+    const abs=path.resolve(cwd,c.file);
+    let fd=null,openErr=null;
+    try{fd=openRepoFile(abs)}catch(e){openErr=e}
+    if(fd===null){invalid.push(bad(c.file,line,c.endLine,isSymlinkErr(openErr)?'not a regular file (symlink, submodule or directory)':'unreadable'));continue}
+    let lines=null;
+    try{const st=fs.fstatSync(fd);if(st.isFile())lines=countLines(fd)}finally{fs.closeSync(fd)}
+    if(lines===null){invalid.push(bad(c.file,line,c.endLine,'not a regular file (symlink, submodule or directory)'));continue}
+    lineCounts[c.file]=lines;
     if(lines===0||line>lines||(endLine!==null&&endLine>lines))invalid.push(bad(c.file,line,c.endLine,`line beyond the file's ${lines} line(s)`));
   }
   emit({version:1,inputHash:crypto.createHash('sha256').update(canonCitations(input)).digest('hex'),total:input.length,invalidCount:invalid.length,invalid:invalid.slice(0,256),lineCounts});process.exit(0);
@@ -209,11 +221,12 @@ if(priorFindings){
   for(const e of [...entries].sort((a,b)=>a.name<b.name?-1:a.name>b.name?1:0)){
     let st;try{st=fs.lstatSync(path.join(runsRoot,e.name))}catch{continue}
     if(st.isSymbolicLink()||!st.isDirectory()||!RUN_ID_RE.test(e.name)||e.name===priorFindingsExclude)continue;
-    const fj=path.join(runsRoot,e.name,'findings.jsonl');let fs2;try{fs2=fs.lstatSync(fj)}catch{continue}
-    if(!fs2.isFile())continue;
+    const fj=path.join(runsRoot,e.name,'findings.jsonl');
     if(prior.length>=32){truncated=true;break}
+    let raw=null;let fd=null;try{fd=openRepoFile(fj);if(fs.fstatSync(fd).isFile())raw=fs.readFileSync(fd,'utf8')}catch{continue}finally{if(fd!==null)fs.closeSync(fd)}
+    if(raw===null)continue;
     const findings=[];
-    for(const line of fs.readFileSync(fj,'utf8').split(/\r?\n/).filter(x=>x.length)){
+    for(const line of raw.split(/\r?\n/).filter(x=>x.length)){
       if(findings.length>=perRunCap){truncated=true;break}
       try{const o=JSON.parse(line);findings.push({candidateId:String(o.candidateId||''),findingId:typeof o.findingId==='string'?o.findingId:null,file:typeof o.file==='string'?o.file:null,line:Number.isInteger(o.line)?o.line:null,symbol:typeof o.symbol==='string'?o.symbol:null,severity:typeof o.severity==='string'?o.severity:null,evidence:typeof o.evidence==='string'?o.evidence:null,rootKey:typeof o.rootKey==='string'?o.rootKey:null})}catch{continue}
     }
@@ -376,9 +389,11 @@ const policyDocEntries=[];
 for(const p of policyDocArgs){
   if(!safeRel(p))throw new Error(`--policy-doc must be a repository-relative path: ${p}`);
   if(!manifest.includes(p))throw new Error(`policy document is not in the attested manifest (it must be tracked or non-ignored untracked): ${p}`);
-  const abs=path.resolve(cwd,p),st=fs.lstatSync(abs);
-  if(st.isSymbolicLink()||!st.isFile())throw new Error(`policy document is not a regular file: ${p}`);
-  const bytes=fs.readFileSync(abs);
+  const abs=path.resolve(cwd,p);let bytes=null;let fd=null;
+  try{fd=openRepoFile(abs);if(fs.fstatSync(fd).isFile())bytes=fs.readFileSync(fd)}
+  catch(e){if(isSymlinkErr(e))throw new Error(`policy document is not a regular file: ${p}`);throw e}
+  finally{if(fd!==null)fs.closeSync(fd)}
+  if(bytes===null)throw new Error(`policy document is not a regular file: ${p}`);
   policyDocEntries.push({path:p,sha256:crypto.createHash('sha256').update(bytes).digest('hex'),bytes:bytes.length});
 }
 if(new Set(policyDocEntries.map(d=>policyFold(d.path))).size!==policyDocEntries.length)throw new Error('--policy-doc names the same document twice');
