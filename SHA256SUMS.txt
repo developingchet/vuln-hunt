@@ -19,6 +19,6 @@ d4e16ebe1792f1f22e1f7dc4d5fe0cdf84f221c03338140025968a59a67221f2  ./agents/vuln-
 5d732d2ae0722734cd702a8879e66ed94da8a4bd22e28df83499b3630d02c032  ./skills/scan/SKILL.md
 fdf530fda2fca769ebc3f93234facaac69bfc850b1fdcb9ce366419c306967ed  ./tests/run.js
 cdbf0b35859dd178078b19227b8d73d3b7dc31bd7e2a1593b75acabce0e8080d  ./vuln-hunt-agents.json
-9d7dc38a80d224f2ca6ee3785b59bd6c8f52d9548d32fd37b396b9e67ac88b48  ./vuln-hunt-attest.js
+b35e4e6dab1abab3fba122200e3fea14d967dad2d8dc3ac2bb2485f2e2523748  ./vuln-hunt-attest.js
 bff306b4af7f04a88f5e7940349cd802576000c317db86e0619bcbb7b3b28a12  ./vuln-hunt-launch.js
 4738bd3fc6659005db516d4e71df1760ebc4a8510d9e5c59ccf412a012364618  ./vuln-hunt.js

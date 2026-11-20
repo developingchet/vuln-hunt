@@ -178,14 +178,14 @@ function readJsonArg(p,what){
   }
   try{return JSON.parse(raw)}catch{throw new Error(`${what} is not valid JSON: ${p}`)}
 }
-// Repository-controlled files are read through one descriptor after lstat has
-// checked every parent directory and the file itself, on every platform: a
-// symlink or junction anywhere on the path is refused (Node reports other
-// Windows reparse points, such as cloud-file placeholders, as ordinary files),
-// and the descriptor must be the file lstat saw (same device and inode), so a
-// swap of the final component between the check and the open is detected.
-// O_NOFOLLOW and O_NONBLOCK add the same refusal on POSIX and keep a FIFO
-// swapped in from blocking the read. A concurrent writer that replaces a
+// Repository-controlled files are read through one descriptor. Every parent
+// directory is checked with lstat first; the file itself is opened, checked
+// through the descriptor with fstat, and then confirmed with lstat to be what
+// the path names: not a symlink or junction, and the same device and inode as
+// the descriptor, so a swap of the final component around the open is
+// detected (Node reports other Windows reparse points, such as cloud-file
+// placeholders, as ordinary files). O_NOFOLLOW refuses a final symlink at the
+// open on POSIX, and O_NONBLOCK keeps a FIFO from blocking it. A concurrent writer that replaces a
 // parent directory after its check is beyond what Node's path-based API can
 // stop; the workflow's closing freshness check reports source that changed
 // during the run.
@@ -193,11 +193,14 @@ const notRegularError=m=>Object.assign(new Error(m),{code:'VH_NOT_REGULAR'});
 function openRepoFile(rel){
   const parts=rel.split('/');let dir=cwd;
   for(const seg of parts.slice(0,-1)){dir=path.join(dir,seg);const s=fs.lstatSync(dir);if(s.isSymbolicLink()||!s.isDirectory())throw notRegularError('path crosses a symlink, junction or non-directory')}
-  const abs=path.join(cwd,...parts),pre=fs.lstatSync(abs,{bigint:true});
-  if(pre.isSymbolicLink()||!pre.isFile())throw notRegularError('not a regular file (symlink, submodule or directory)');
+  const abs=path.join(cwd,...parts),notRegular='not a regular file (symlink, submodule or directory)';
   const fd=fs.openSync(abs,process.platform==='win32'?'r':(fs.constants.O_RDONLY|fs.constants.O_NOFOLLOW|fs.constants.O_NONBLOCK));
-  try{const st=fs.fstatSync(fd,{bigint:true});if(!st.isFile()||st.ino!==pre.ino||st.dev!==pre.dev)throw notRegularError('file was replaced while it was being opened');return fd}
-  catch(e){fs.closeSync(fd);throw e}
+  try{
+    const st=fs.fstatSync(fd,{bigint:true});if(!st.isFile())throw notRegularError(notRegular);
+    const now=fs.lstatSync(abs,{bigint:true});if(now.isSymbolicLink()||!now.isFile())throw notRegularError(notRegular);
+    if(now.ino!==st.ino||now.dev!==st.dev)throw notRegularError('file was replaced while it was being opened');
+    return fd;
+  }catch(e){fs.closeSync(fd);throw e}
 }
 const emitWithHash=o=>emit({...o,resultHash:crypto.createHash('sha256').update(JSON.stringify(o)).digest('hex')});
 // Reads at most cap bytes from an open descriptor; returns null when the file
