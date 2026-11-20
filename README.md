@@ -388,7 +388,7 @@ left out takes its default.
 | `hunters` | 2–6, `"auto"` | 4 | Most hunter portfolios recon may create. |
 | `candidateCap` | 1–6 | 3 | Most candidates per hunter; a hunter that hits it is listed in `candidateSaturation`. |
 | `maxConcurrentAgents` | 1–256 | runtime's own limit | Ceiling on agents this one run dispatches at once, across every stage, panels and retries included. Admission is first-in-first-out, and a failed agent releases its slot. |
-| `policyDocs` | 1–8 paths | none | Repository security-policy documents to read as untrusted evidence; each must have been attested with `--policy-doc`. |
+| `policyDocs` | 1–8 paths | none | Repository security-policy documents to read as untrusted evidence; each must have been attested with `--policy-doc`. An attested document left out here is listed in `policyDocsAttestedInactive`. |
 | `salvage` | `true`, `false` | `true` | Revisit units a hunter did not reach, at or above `salvageRisk`. |
 | `salvageRisk` | `"high"`, `"medium"`, `"all"` | `"high"` | Lowest unit risk salvage covers. |
 | `sweep` | `true`, `false` | `true` | Look for bugs across portfolio boundaries; never upgrades unit coverage. |
@@ -401,7 +401,7 @@ left out takes its default.
 | `reproMinSeverity` | `"critical"`, `"high"`, `"medium"`, `"low"` | none | Reproduce only verified findings at or above this severity, by the verifiers' own severity opinions. |
 | `models`, `efforts` | per-stage map | see below | Model and effort per stage. |
 | `allowSparse`, `allowLfsPointers` | `true`, `false` | `false` | Accept a sparse checkout or LFS pointers in a scan that is not strict. |
-| `runId` | string, not `.` or `..` | derived | Run folder name when there is no attestation; an attestation's own `runId` always wins. |
+| `runId` | string, not ending in a dot, not a Windows device name | derived | Run folder name when there is no attestation; an attestation's own `runId` always wins. |
 | `tag` | string | none | A free-form label copied into the result. |
 
 Research and verification stages inherit your `/model`. The report and the fallback inventory default to Sonnet,
@@ -433,9 +433,12 @@ node "<plugin folder>/vuln-hunt-attest.js" --emit-run --policy-doc SECURITY.md
 
 The helper prints one line of JSON naming the private run directory. Run the `vuln-hunt:vuln-hunt` workflow with
 the `scriptPath` it names and `args` such as `{"strictProvenance": true, "hunters": 4}`; the attestation is
-already embedded in that script, byte-exact. Passing the attestation as `args.attestation` also still works for
-small attestations: the workflow recomputes its state hash and refuses any copy that differs from the helper's
-output.
+already embedded in that script as the attestation file's exact JSON text. The generated script refuses an
+`args.attestation` that differs from its embedded copy, `null` included. The helper also prints the script's
+`scriptHash`; the workflow cannot hash its own source, so keep the run directory private and compare the hash
+by hand if the directory could have been touched. Passing the attestation as `args.attestation` to the plain
+template still works for small attestations: the workflow recomputes its state hash and refuses any copy that
+differs from the helper's output.
 
 Without an attestation, a whole-tree scan that is not strict still runs: a Sonnet inventory agent lists and
 partitions the files, and provenance is labeled `MODEL_REPORTED_PROVENANCE`. That mode is weaker and should not be
@@ -468,18 +471,16 @@ Units use bytewise UTF-8 order, so Windows and Linux split the same paths the sa
 
 The attestation is not signed; anyone can edit JSON. It is an independently computed record, meant to go
 straight from the helper to the workflow, which recomputes `stateHash` and refuses any mismatch. Version 5 adds
-`policyDocs`; the workflow still accepts a version-4 attestation that has none, but only while the attested
-helper is still the copy that produced it — after a plugin update, regenerate the attestation, since the
-upgraded helper hashes a longer field list.
+`policyDocs`; the workflow refuses a version-4 attestation, so regenerate it after a plugin update.
 
 ### Freshness and postflight
 
 Before recon, the mechanic worker runs the attested helper with the attested Node as `--fingerprint <runId>`,
 repeating the attested `--policy-doc` list. The helper recomputes the attestation and prints its `stateHash`.
 The workflow refuses the run unless the root, `HEAD`, worktree state, file list, content and state hashes all
-match and `.vuln-hunt/runs/<runId>` does not exist yet. After the report is written, the same fingerprint runs
-once more; if the source state no longer matches, the result carries `sourceChangedDuringRun: true` prominently
-instead of silently presenting stale citations. Neither check can stop a concurrent writer during the run; use a
+match and `.vuln-hunt/runs/<runId>` does not exist yet. Before the report is written, the same fingerprint runs
+once more; if the source state no longer matches, the result and the report carry `sourceChangedDuringRun: true`
+prominently instead of silently presenting stale citations. Neither check can stop a concurrent writer during the run; use a
 disposable clone or worktree for measured runs.
 
 To confirm nothing changed during a run by hand, save the attestation outside the repository and compare
@@ -518,7 +519,7 @@ Severity follows the boundary a contradicted claim describes, not the mere fact 
 | State | Meaning |
 |---|---|
 | `deep-reviewed` | its hunter reported it reached, cited lines inside it, and the receipts are enough for its size |
-| `receipt-thin` | reached with citations, but fewer than the unit needs (up to 8, scaled from one per 25 files) |
+| `receipt-thin` | reached with citations, but fewer distinct ones than the unit needs (up to 8, scaled from one per 25 files); salvage revisits it |
 | `receipt-missing` | reported reached without a valid citation inside it, or all receipts failed mechanical validation |
 | `not-reached` | its hunter reported it was not reached, with a reason |
 | `coverage-conflict` | reported both reached and not reached |
@@ -529,19 +530,26 @@ Severity follows the boundary a contradicted claim describes, not the mere fact 
 | `unaccounted` | no stage recorded any state for it; a bug, not a coverage claim |
 
 After the panels, every researcher and verifier citation is checked mechanically with
-`--validate-citations`: the file must be in the attested manifest and a regular file, and the line must exist.
-A citation that fails is dropped from its vote and its receipt. The result's `citationsValidated` reports the
-outcome: `not-needed` (the scan produced no citations), `validated`, `partial` (more than 4096 citations),
-`transport-failed` (the check could not run, so no coverage claim is treated as mechanically confirmed), or
-`unavailable-no-attestation`.
+`--validate-citations`, and an adjudicator's citations are checked the same way before its vote counts: the
+file must be in the live manifest (in any letter case on a case-insensitive checkout), a regular file reached
+without a symlink or junction anywhere on its path, and the line must exist. Citations travel to the helper in
+batches of 512, base64-encoded, so no file name text appears in the command the mechanic runs. Validation fails
+closed: a citation the helper rejected, and every citation it did not confirm (its batch did not come back intact
+with the echoed input hash, it was past the 4096 cap, or it could not be parsed), is dropped from its vote and its
+receipt. The echoed hash detects a garbled or truncated transport; it is not a signature, and a mechanic that
+rewrote the helper's output on purpose would not be detected by it. The result's `citationsValidated` reports the
+outcome: `not-needed` (the scan produced no citations), `validated`, `partial` (some citations could not be
+confirmed and were dropped), `transport-failed` (none could be confirmed, so no finding verifies and reached
+units lose their receipts), or `unavailable-no-attestation`. After `partial` or `transport-failed`, rerun the
+scan before trusting its unresolved counts.
 
 `deep-reviewed` and `gap-reviewed` remain the researcher's own accounting for which files were read; mechanical
 validation confirms the citations point at real lines, not that every line was inspected.
 
 ### Verification rules
 
-Each candidate gets a fixed `candidateId` plus a deterministic `findingId`, a SHA-256 over its location and
-wording. Both are per-run values: the same root cause can carry a different `candidateId` in another run, and an
+Each candidate gets a fixed `candidateId` plus a deterministic `findingId`, a SHA-256 over its file, symbol and
+wording; the line is left out because unrelated edits move it. Both are per-run values: the same root cause can carry a different `candidateId` in another run, and an
 unrelated vulnerability can reuse the same one. Never compare findings across runs by `candidateId` alone; see
 [Cross-run reconciliation](#cross-run-reconciliation).
 
@@ -557,25 +565,30 @@ A candidate's final disposition is one of:
 | `REJECTED` | two decisive false-positive votes, or a full panel with two or more |
 | `PREDATES_CHANGE` | a change review where the flaw predates the reviewed change |
 | `UNRESOLVED_EVIDENCE` | the panel completed but the evidence did not settle the question |
-| `UNRESOLVED_INFRASTRUCTURE` | one or more votes never returned, even after a bounded recovery pass |
-| `NOT_REACHED` | the candidate's panel task itself failed |
+| `UNRESOLVED_INFRASTRUCTURE` | one or more votes, or the adjudicator's vote, never returned, even after a bounded recovery pass |
+| `NOT_REACHED` | the candidate's panel task itself failed or returned nothing |
 
 A vote that returns nothing is asked once more immediately and once more in a recovery pass that retries only the
-missing seats; a failure the runtime reports as rate limiting gets one paced retry through the concurrency gate.
+missing seats; a failure the runtime reports as rate limiting gets one immediate retry, paced only by the
+`maxConcurrentAgents` queue when it is set, so a seat is dispatched at most six times.
 A panel that still cannot complete is `UNRESOLVED_INFRASTRUCTURE` with its missing seats named — never verified,
 never rejected. Infrastructure failures never become verdicts.
 
 ### Cross-run reconciliation
 
-Before the report, the helper's `--prior-findings` reads every earlier run's `findings.jsonl` under
-`.vuln-hunt/runs/`, and each verified finding is related to them:
+Before the report, the helper's `--prior-findings` reads the `findings.jsonl` of the 16 most recent earlier runs
+under `.vuln-hunt/runs/` (64 findings each, every field typed and bounded, with a `truncated` flag when anything
+was left out), and each verified finding is related to them:
 
 - `REPRODUCED_AGAIN`: the same `findingId` was verified in an earlier run.
 - `TENTATIVE_MATCH`: the same file and symbol within 10 lines, but the mechanism was worded differently; confirm
   by hand before treating it as the same root cause.
 - `NEW`: no match.
-- `NOT_REASSESSED`: a prior finding with no counterpart in this run. Absence from a later scan is never treated
-  as evidence of remediation; a failed reproduction is never treated as proof of a false positive.
+- `REASSESSED_NOT_VERIFIED`: a prior finding that matches a candidate this run examined but did not verify; the
+  entry names that candidate and its disposition.
+- `NOT_REASSESSED`: a prior finding with no counterpart among this run's candidates. Neither this nor the
+  previous relation is treated as evidence of remediation; a failed reproduction is never treated as proof of a
+  false positive.
 
 The relations and counts appear in the workflow's result and in the report, with the prior run names.
 
@@ -598,11 +611,13 @@ no workflow script needs hand editing:
 | `testEntrypoints` | up to 8 commands | Existing test entrypoints to prefer over ad-hoc reproducers. |
 | `instructions` | string, ≤ 4000 characters | Environment-specific notes; passed as untrusted data, never executed as instructions. |
 | `resourceLimits` | `cpu`, `memory`, `pids` | Short strings the repro agent reads as descriptors. |
-| `timeoutMs` | 1000–3600000 | Per-reproduction budget. |
+| `timeoutMs` | 1000–3600000 | Per-reproduction budget the repro agent is asked to keep; the workflow cannot enforce it. |
 | `verifiedReady` | boolean | The operator's assertion that the environment exists and works; recorded, not trusted. |
 
 A reproduction reports `REPRODUCED` only when the specific vulnerable execution path was reached with
-attacker-controlled input and the security effect was observed. A generic test suite that merely passes is
+attacker-controlled input and the security effect was observed, and a finding becomes `EXECUTION_REPRODUCED` only
+when the result also sets `reachedVulnerablePath` and `attackerInputTested`. `reproMinSeverity` compares against
+the highest severity any verifier gave; a finding no verifier rated is reproduced too. A generic test suite that merely passes is
 environment readiness and is returned as `NOT_REPRODUCED`, never as a reproduction. Other statuses —
 `BLOCKED_NO_REPRO_ENVIRONMENT`, `BLOCKED_MISSING_DEPENDENCY`, `BLOCKED_UNSUPPORTED_PLATFORM`, `TIMEOUT`,
 `INFRASTRUCTURE_FAILED`, `NOT_ATTEMPTED` — keep per-finding evidence honest, and a failed reproduction never
@@ -666,19 +681,22 @@ or its Node runtime sits under such a root. The launcher and the PowerShell wrap
 .vuln-hunt/runs/<runId>/coverage.jsonl        one work unit per line
 ```
 
-Each line of `findings.jsonl` has at least `candidateId`, `severity` (`critical`, `high`, `medium` or `low`),
-`evidence`, `findingId` and `relation` (`REPRODUCED_AGAIN`, `TENTATIVE_MATCH` or `NEW`). Rejected and unresolved
+Each line of `findings.jsonl` has at least `candidateId`, `file`, `line`, `symbol`, `severity` (`critical`,
+`high`, `medium` or `low`), `evidence`, `findingId` and `relation` (`REPRODUCED_AGAIN`, `TENTATIVE_MATCH`,
+`NEW`, or `UNKNOWN` when prior runs could not be read). Rejected and unresolved
 candidates stay in the workflow's returned result, never in `findings.jsonl`. `.vuln-hunt/.gitignore` holds `*`,
 so run folders are never committed. The reporter refuses to overwrite a tracked file, follow a link or reuse a
-run folder. If it cannot write, the workflow still returns its result with a `reportWarning`, or with a
-`reportError` when the reporter agent is not available.
+run folder. If it cannot write, the workflow still returns its full result as `structuredResult`, with a `reportWarning`, or
+with a `reportError` when the reporter agent is not available; a written report that fails validation also
+returns `structuredResult`.
 
 What the workflow returns is deliberately small: the run identity, report paths, verified/rejected/unresolved
 counts by category, the coverage summary, saturation, reconciliation counts, the report-validation verdict and
 `sourceChangedDuringRun`, plus a per-candidate and per-unit ledger of statuses. Ballots, receipts and vote text
 live in the report artifacts, not in the conversation. After the reporter claims the files are written, the
-helper's `--validate-report` checks them mechanically — files present, JSONL parseable, candidate and unit IDs
-reconciled against the run's ledger — and a mismatch is reported, never assumed away.
+helper's `--validate-report` checks them mechanically — files present, JSONL parseable, every verified finding
+present once with this run's `findingId`, `relation` and evidence level, and every unit with its ledger status —
+and a mismatch is reported, never assumed away.
 
 ## Limits and cost
 
