@@ -1,9 +1,9 @@
 ee99393d7d8ea245c90ad71ef11a0adc49762bc14186a6afc0e88710a0cd7c25  ./.claude-plugin/icon.png
 ca54a4400fedc7d4b6ef11a2c7126e9af63d39c8108e9b184844e92288d249cc  ./.claude-plugin/marketplace.json
-d3b896bce529f9bebea7f004b50bd62da6bdbaa9cd29cc11105ee8c39d7c14e4  ./.claude-plugin/plugin.json
+7804f67d9d9f6d2fc0936d047ea40309206e774c0a1d8bf8c9ee41cdbd064cd1  ./.claude-plugin/plugin.json
 6e0b6590233d279c7d6605eb618f1737f9689c0f8c185e4d047fe6c55648d685  ./.gitattributes
 4d56952b0fb13bf8f9b6c13a6d4c34a075bac3af447636a1df4335d7576e2f97  ./.gitignore
-a4f39d594fe6c6860cc948fa70dd52f299273a78df09f40dc501671f82525331  ./CHANGELOG.md
+5218919ee179c7e8c37442632f71aa7830d36de5e81172004de909a88c9ff154  ./CHANGELOG.md
 04a0b0aa1c4c7ce90d38e4c85e3fb002a3d445bd1b4e9fa4caf179923d180bb8  ./Compare-VulnHuntPostflight.ps1
 15f6f324692ad4c3005f411f3a7d1c7c93a9cfc6bed6188da9e5bfdf97a3fda5  ./Get-VulnHuntAttestation.ps1
 144dd8bcd648c00e9ca2be16dccd1155127f5a32584f28476a86c1aba348d302  ./ISOLATION.md
