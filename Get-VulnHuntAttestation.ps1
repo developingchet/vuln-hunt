@@ -1,6 +1,7 @@
 [CmdletBinding()]
 param(
   [string]$Range,
+  [string[]]$PolicyDoc,
   [switch]$Copy
 )
 $ErrorActionPreference='Stop'
@@ -35,6 +36,7 @@ if(-not(Test-Path -LiteralPath $helper)){throw "Missing attestation helper: $hel
 $node=Get-TrustedApplication 'node'
 $argsList=@($helper)
 if($Range){$argsList+=@('--range',$Range)}
+if($PolicyDoc){foreach($doc in $PolicyDoc){$argsList+=@('--policy-doc',$doc)}}
 $json=& $node.Source @argsList
 if($LASTEXITCODE -ne 0){throw "Attestation helper failed with exit code $LASTEXITCODE"}
 if($Copy){Set-Clipboard -Value $json;Write-Host 'Attestation JSON copied to clipboard.'}

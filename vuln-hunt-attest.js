@@ -1,19 +1,32 @@
 #!/usr/bin/env node
 'use strict';
 const {spawnSync}=require('child_process');
-const fs=require('fs'),path=require('path'),crypto=require('crypto');
+const fs=require('fs'),os=require('os'),path=require('path'),crypto=require('crypto');
 const cwd=process.cwd(),argv=process.argv.slice(2);
-let range=null,selfTest=false,comparePath=null,checkOutputIgnoreTracked=false,fingerprintRunId=null;
+// A runId names a directory under .vuln-hunt/runs. Windows drops trailing
+// dots from a path segment, so "." and ".." (which would leave the namespace)
+// and any name ending in a dot are refused, as are names Windows maps to a
+// device whatever their extension.
+const RUN_ID_RE=/^(?!.*\.$)(?!(?:con|prn|aux|nul|com\d|lpt\d)(?:\.|$))[A-Za-z0-9._-]{1,96}$/i;
+let range=null,selfTest=false,comparePath=null,checkOutputIgnoreTracked=false,fingerprintRunId=null,policyDocArgs=[],emitRun=false,validateCitationsPath=null,validateReportRunDir=null,validateReportExpect=null,priorFindings=false,priorFindingsExclude=null,inputBase64=false;
 for(let i=0;i<argv.length;i++){
   if(argv[i]==='--range'){if(i+1>=argv.length)throw new Error('--range requires a value');range=argv[++i]}
   else if(argv[i]==='--self-test'){selfTest=true}
   else if(argv[i]==='--compare'){if(i+1>=argv.length)throw new Error('--compare requires a JSON file');comparePath=argv[++i]}
-  else if(argv[i]==='--fingerprint'){if(i+1>=argv.length||!/^[A-Za-z0-9._-]{1,96}$/.test(argv[i+1]))throw new Error('--fingerprint requires the attested runId');fingerprintRunId=argv[++i]}
+  else if(argv[i]==='--fingerprint'){if(i+1>=argv.length||!RUN_ID_RE.test(argv[i+1]))throw new Error('--fingerprint requires the attested runId');fingerprintRunId=argv[++i]}
   else if(argv[i]==='--check-output-ignore-tracked'){checkOutputIgnoreTracked=true}
-  else if(argv[i]==='--help'){console.log('Usage: node vuln-hunt-attest.js [--self-test] [--range <ref|A..B|A...B>] [--compare <before-attestation.json> | --fingerprint <runId>] [--check-output-ignore-tracked]');process.exit(0)}
+  else if(argv[i]==='--policy-doc'){if(i+1>=argv.length||!argv[i+1])throw new Error('--policy-doc requires a repository-relative path');policyDocArgs.push(argv[++i])}
+  else if(argv[i]==='--emit-run'){emitRun=true}
+  else if(argv[i]==='--validate-citations'){if(i+1>=argv.length)throw new Error('--validate-citations requires a JSON file of citations');validateCitationsPath=argv[++i]}
+  else if(argv[i]==='--validate-report'){if(i+2>=argv.length)throw new Error('--validate-report requires a run directory name and an expect JSON file');validateReportRunDir=argv[++i];validateReportExpect=argv[++i]}
+  else if(argv[i]==='--prior-findings'){priorFindings=true}
+  else if(argv[i]==='--input-base64'){inputBase64=true}
+  else if(argv[i]==='--exclude-run'){if(i+1>=argv.length||!RUN_ID_RE.test(argv[i+1]))throw new Error('--exclude-run requires a runId');priorFindingsExclude=argv[++i]}
+  else if(argv[i]==='--help'){console.log('Usage: node vuln-hunt-attest.js [--self-test] [--range <ref|A..B|A...B>] [--policy-doc <path>]... [--emit-run] [--compare <before-attestation.json> | --fingerprint <runId>] [--check-output-ignore-tracked]\nStandalone mechanical modes (from the repository root): [--input-base64] [--validate-citations <citations.json>] [--validate-report <runId> <expect.json>] [--prior-findings [--exclude-run <runId>]]');process.exit(0)}
   else throw new Error(`Unknown argument: ${argv[i]}`);
 }
 if(comparePath&&fingerprintRunId)throw new Error('--compare and --fingerprint are mutually exclusive');
+if(emitRun&&(comparePath||fingerprintRunId))throw new Error('--emit-run cannot be combined with --compare or --fingerprint');
 const rangeRe=/^[A-Za-z0-9][A-Za-z0-9._~^/@:+{}-]*(?:\.{2,3}[A-Za-z0-9][A-Za-z0-9._~^/@:+{}-]*)?$/;
 // Split once at the first separator. Refs cannot contain "..", so text left
 // over after it is a malformed range, never a longer valid one.
@@ -23,15 +36,25 @@ if(range){if(!rangeRe.test(range))throw new Error('range contains unsupported ch
 // one directory reached through two spellings compares equal.
 function real(p){try{return fs.realpathSync.native(p)}catch(e){if(e&&['ENOENT','ENOTDIR','ELOOP'].includes(e.code))throw e;return fs.realpathSync(p)}}
 function inside(base,target){const r=path.relative(base,target);return r===''||(!r.startsWith(`..${path.sep}`)&&r!=='..'&&!path.isAbsolute(r))}
+// Files that must be regular are opened before they are checked, then
+// checked through the descriptor and confirmed with lstat. On POSIX,
+// O_NOFOLLOW refuses a final symlink at the open, O_NONBLOCK keeps a FIFO from
+// blocking it and O_NOCTTY keeps a terminal from becoming the controlling
+// one; the errno values below are how platforms report such a refusal.
+// Windows has no O_NOFOLLOW, so a final symlink or junction is detected with
+// readlink, which reads the link itself, before the open: opening it would
+// reach its target, which may be a network share or a named pipe.
+const OPEN_REGULAR=process.platform==='win32'?'r':(fs.constants.O_RDONLY|fs.constants.O_NOFOLLOW|fs.constants.O_NONBLOCK|(fs.constants.O_NOCTTY||0));
+const NOT_REGULAR_CODES=['ELOOP','EMLINK','EISDIR','ENXIO'];
+function isWindowsLink(p){if(process.platform!=='win32')return false;try{fs.readlinkSync(p);return true}catch(e){if(e&&e.code==='ENOENT')throw e;return false}}
 // Opens a path once and checks and reads it through that descriptor, so the
-// file inspected is the file read. O_NOFOLLOW refuses a final symlink where
-// the platform has it; elsewhere the path must still name the opened file
+// file inspected is the file read; the path must still name the opened file
 // afterwards. kind is missing, other (a link, directory or replaced file) or file.
 function readRegularFile(p){
-  let fd;try{fd=fs.openSync(p,fs.constants.O_RDONLY|(fs.constants.O_NOFOLLOW||0))}catch(e){if(e&&e.code==='ENOENT')return{kind:'missing'};if(e&&['ELOOP','EMLINK','EISDIR'].includes(e.code))return{kind:'other'};throw e}
+  let fd;try{if(isWindowsLink(p))return{kind:'other'};fd=fs.openSync(p,OPEN_REGULAR)}catch(e){if(e&&e.code==='ENOENT')return{kind:'missing'};if(e&&NOT_REGULAR_CODES.includes(e.code))return{kind:'other'};throw e}
   try{
-    const st=fs.fstatSync(fd);if(!st.isFile())return{kind:'other'};
-    let ls;try{ls=fs.lstatSync(p)}catch(e){if(e&&e.code==='ENOENT')return{kind:'other'};throw e}
+    const st=fs.fstatSync(fd,{bigint:true});if(!st.isFile())return{kind:'other'};
+    let ls;try{ls=fs.lstatSync(p,{bigint:true})}catch(e){if(e&&e.code==='ENOENT')return{kind:'other'};throw e}
     if(ls.isSymbolicLink()||ls.ino!==st.ino||ls.dev!==st.dev)return{kind:'other'};
     return{kind:'file',text:fs.readFileSync(fd,'utf8')};
   }finally{fs.closeSync(fd)}
@@ -130,11 +153,190 @@ const dec=new TextDecoder('utf-8',{fatal:true});
 {const f=readRegularFile(path.join(cwd,'.vuln-hunt','.gitignore'));if(f.kind==='file'&&(f.text==='runs/'||f.text==='runs/\n'||f.text==='runs/\r\n'))throw new Error('.vuln-hunt/.gitignore contains runs/ and would let tool output into the manifest; replace its contents with *')}
 function zlist(b){const out=[];let start=0;for(let i=0;i<b.length;i++)if(b[i]===0){try{out.push(dec.decode(b.subarray(start,i)))}catch{throw new Error('repository contains a non-UTF-8 pathname; unsupported for safe workflow citation')}start=i+1}if(start!==b.length)throw new Error('expected NUL-terminated Git output');return out}
 const hash=b=>text(git(['hash-object','--no-filters','--stdin'],{input:b}));
+// Untracked OS, editor and Claude Code metadata never enters the manifest.
+// --exclude patterns apply only to untracked files, so tracked copies (for
+// example a committed .vscode/tasks.json) stay in coverage. Keep this list
+// identical to LOCAL_METADATA_EXCLUDES in vuln-hunt.js.
+const LOCAL_METADATA_EXCLUDES=[".DS_Store","Thumbs.db","ehthumbs.db","desktop.ini","/.idea/","/.vscode/","/.claude/settings.local.json"];
+const untrackedFilter=['--exclude-per-directory=.gitignore',...LOCAL_METADATA_EXCLUDES.map(p=>`--exclude=${p}`)];
 const oid=s=>/^[0-9a-f]{40}(?:[0-9a-f]{24})?$/i.test(s);
 // ls-files --others lists an untracked nested repository as one "dir/" entry
 // and never its files, so the entry is unsupported rather than scanned.
 const safeRel=p=>p.length>0&&!p.endsWith('/')&&!p.includes('\\')&&!/[\0\r\n\t]/.test(p)&&!path.isAbsolute(p)&&!p.split('/').includes('..');
 function rev(ref){const s=text(git(['rev-parse','--verify',`${ref}^{commit}`]));if(!oid(s))throw new Error(`could not resolve commit: ${ref}`);return s}
+// --- Standalone mechanical modes --------------------------------------------
+// The workflow dispatches these through the mechanic worker so citation,
+// report and prior-run checks are computed by this trusted helper rather
+// than judged by a model. Each reads the repository only; none writes it.
+// The helper echoes a hash of the input it received, which the workflow
+// recomputes, and adds a resultHash over the rest of its own output, which
+// the workflow recomputes over what came back: together they catch a list or
+// result the transport dropped, reordered or garbled in either direction.
+// Neither is a signature, so a mechanic that rewrote this helper's output on
+// purpose would not be detected by them. Citation validation names its
+// inputs by index and carries no repository file names, so the mechanic never
+// reads file-name text back from it either.
+// With --input-base64 the input file holds base64 of the UTF-8 JSON. The
+// workflow sends input that way so the command a mechanic copies carries no
+// quote, shell metacharacter or prose taken from repository file names.
+function readJsonArg(p,what){
+  let raw=fs.readFileSync(path.resolve(p),'utf8').replace(/^﻿/,'');
+  if(inputBase64){
+    const b=raw.replace(/\s+/g,'');
+    if(!/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(b))throw new Error(`${what} is not valid base64: ${p}`);
+    try{raw=dec.decode(Buffer.from(b,'base64'))}catch{throw new Error(`${what} is not UTF-8 once base64-decoded: ${p}`)}
+  }
+  try{return JSON.parse(raw)}catch{throw new Error(`${what} is not valid JSON: ${p}`)}
+}
+// Repository-controlled files are read through one descriptor. Every parent
+// directory is checked with lstat first; the file itself is opened as
+// readRegularFile opens it, checked through the descriptor with fstat, and
+// then confirmed with lstat to be what the path names: not a symlink or
+// junction, and the same device and inode as the descriptor, so a swap of the
+// final component around the open is detected (Node reports other Windows
+// reparse points, such as cloud-file placeholders, as ordinary files). A
+// concurrent writer that replaces a parent directory after its check is
+// beyond what Node's path-based API can stop; the workflow's closing
+// freshness check reports source that changed during the run.
+const notRegularError=m=>Object.assign(new Error(m),{code:'VH_NOT_REGULAR'});
+function openRepoFile(rel){
+  const parts=rel.split('/');let dir=cwd;
+  for(const seg of parts.slice(0,-1)){dir=path.join(dir,seg);const s=fs.lstatSync(dir);if(s.isSymbolicLink()||!s.isDirectory())throw notRegularError('path crosses a symlink, junction or non-directory')}
+  const abs=path.join(cwd,...parts),notRegular='not a regular file (symlink, submodule or directory)';
+  if(isWindowsLink(abs))throw notRegularError(notRegular);
+  const fd=fs.openSync(abs,OPEN_REGULAR);
+  try{
+    const st=fs.fstatSync(fd,{bigint:true});if(!st.isFile())throw notRegularError(notRegular);
+    const now=fs.lstatSync(abs,{bigint:true});if(now.isSymbolicLink()||!now.isFile())throw notRegularError(notRegular);
+    if(now.ino!==st.ino||now.dev!==st.dev)throw notRegularError('file was replaced while it was being opened');
+    return fd;
+  }catch(e){fs.closeSync(fd);throw e}
+}
+const emitWithHash=o=>emit({...o,resultHash:crypto.createHash('sha256').update(JSON.stringify(o)).digest('hex')});
+// Reads at most cap bytes from an open descriptor; returns null when the file
+// is larger, so no caller reads an unbounded file.
+function readBounded(fd,cap){const size=Number(fs.fstatSync(fd).size);if(size>cap)return null;const buf=Buffer.alloc(size);let off=0;while(off<size){const k=fs.readSync(fd,buf,off,size-off,off);if(!k)break;off+=k}return buf.subarray(0,off)}
+const loneSurrogate=/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/;
+const openFailure=e=>e&&e.code==='VH_NOT_REGULAR'?e.message:e&&NOT_REGULAR_CODES.includes(e.code)?'not a regular file (symlink, submodule or directory)':e&&['ENOENT','ENOTDIR'].includes(e.code)?'missing from the working tree':null;
+const MAX_LINE=10000000,SEVERITIES=['critical','high','medium','low'],EVIDENCE_LEVELS=['STATICALLY_VERIFIED','EXECUTION_REPRODUCED'],RELATIONS=['REPRODUCED_AGAIN','TENTATIVE_MATCH','NEW','UNKNOWN'];
+const canonCitations=cs=>JSON.stringify((Array.isArray(cs)?cs:[]).map(c=>c&&typeof c==='object'?[String(c.file),Number(c.line),c.endLine==null?null:Number(c.endLine)]:null));
+if(validateCitationsPath){
+  const input=readJsonArg(validateCitationsPath,'--validate-citations input');
+  if(!Array.isArray(input)||input.length>4096||!input.every(c=>c&&typeof c==='object'&&typeof c.file==='string'&&c.file.length<=1024&&Number.isInteger(c.line)&&c.line>=1&&c.line<=MAX_LINE&&(c.endLine==null||(Number.isInteger(c.endLine)&&c.endLine>=c.line&&c.endLine<=MAX_LINE))))throw new Error('citation input must be an array of at most 4096 {file,line,endLine?} objects (file at most 1024 characters, line>=1, endLine>=line, both at most 10000000)');
+  const manifest=zlist(git(['ls-files','--cached','--others',...untrackedFilter,'-z']).stdout),manifestSet=new Set(manifest);
+  // A case-insensitive checkout resolves a citation in any letter case to its
+  // manifest spelling, as the workflow's own path checks do. Two manifest
+  // paths that differ only in case make the resolution ambiguous.
+  const ignoreCase=boolConfig('core.ignoreCase'),folded=new Map();
+  if(ignoreCase)for(const p of manifest){const k=p.toLowerCase();folded.set(k,folded.has(k)&&folded.get(k)!==p?null:p)}
+  const special=stageSpecial(),linkSet=new Set([...special.trackedSymlinks,...special.submodules]);
+  const invalid=[],fileLines=new Map();
+  const bad=(index,reason)=>({index,reason});
+  const countLines=fd=>{const buf=Buffer.alloc(1<<20);let n=0,bytes=0,last=-1;for(let r;(r=fs.readSync(fd,buf,0,buf.length,null))>0;){bytes+=r;last=buf[r-1];for(let i=0;i<r;i++)if(buf[i]===10)n++}return bytes===0?0:last===10?n:n+1};
+  input.forEach((c,index)=>{
+    if(!safeRel(c.file)){invalid.push(bad(index,'path is absolute, backslashed, or contains .. or a control character'));return}
+    let target=manifestSet.has(c.file)?c.file:undefined;
+    if(target===undefined&&ignoreCase){const hit=folded.get(c.file.toLowerCase());if(hit===null){invalid.push(bad(index,'ambiguous letter case: several manifest paths match'));return}target=hit}
+    if(target===undefined){invalid.push(bad(index,'not in the live manifest'));return}
+    if(linkSet.has(target)){invalid.push(bad(index,'not a regular file (symlink, submodule or directory)'));return}
+    if(!fileLines.has(target)){
+      let lines=null,reason=null,fd=null;
+      try{fd=openRepoFile(target);lines=countLines(fd)}catch(e){reason=openFailure(e)||'unreadable'}finally{if(fd!==null)fs.closeSync(fd)}
+      fileLines.set(target,{lines,reason});
+    }
+    const {lines,reason}=fileLines.get(target);
+    if(lines===null){invalid.push(bad(index,reason));return}
+    if(lines===0||c.line>lines||(c.endLine!=null&&c.endLine>lines))invalid.push(bad(index,`line beyond the file's ${lines} line(s)`));
+  });
+  emitWithHash({version:3,inputHash:crypto.createHash('sha256').update(canonCitations(input)).digest('hex'),total:input.length,invalidCount:invalid.length,invalid,lineChecks:[...fileLines.values()].filter(x=>x.lines!==null).length});process.exit(0);
+}
+// The expectation names every verified finding with the findingId, relation
+// and evidence level the run assigned it, and every unit with its coverage
+// status, so a report that restates any of them differently fails.
+const canonExpect=e=>JSON.stringify({runId:String(e.runId||''),findings:(Array.isArray(e.findings)?e.findings:[]).map(f=>[String(f.candidateId),String(f.findingId),String(f.relation),String(f.evidence)]).sort(),coverage:(Array.isArray(e.coverage)?e.coverage:[]).map(u=>[String(u.unitId),String(u.status)]).sort()});
+// An output namespace directory reached through a link would read run
+// artifacts from outside the repository.
+function outputDirExists(rel){try{const s=fs.lstatSync(path.join(cwd,...rel.split('/')));if(s.isSymbolicLink()||!s.isDirectory())throw new Error(`${rel} is a symlink, junction or non-directory; refusing to read run artifacts through it`);return true}catch(e){if(e&&['ENOENT','ENOTDIR'].includes(e.code))return false;throw e}}
+if(validateReportRunDir!==null){
+  const expect=readJsonArg(validateReportExpect,'--validate-report expect');
+  const goodExpect=expect&&typeof expect==='object'&&RUN_ID_RE.test(String(expect.runId||''))
+    &&Array.isArray(expect.findings)&&expect.findings.length<=1024&&expect.findings.every(f=>f&&typeof f.candidateId==='string'&&/^[0-9a-f]{64}$/.test(String(f.findingId))&&RELATIONS.includes(f.relation)&&EVIDENCE_LEVELS.includes(f.evidence))&&new Set(expect.findings.map(f=>f.candidateId)).size===expect.findings.length
+    &&Array.isArray(expect.coverage)&&expect.coverage.length<=64&&expect.coverage.every(u=>u&&typeof u.unitId==='string'&&typeof u.status==='string')&&new Set(expect.coverage.map(u=>u.unitId)).size===expect.coverage.length;
+  if(!goodExpect)throw new Error('expect input needs a runId, a findings array of unique {candidateId,findingId,relation,evidence} and a coverage array of unique {unitId,status}');
+  if(validateReportRunDir!==expect.runId)throw new Error('--validate-report run directory must equal the expect runId');
+  if(!outputDirExists('.vuln-hunt')||!outputDirExists('.vuln-hunt/runs')||!outputDirExists(`.vuln-hunt/runs/${expect.runId}`))throw new Error('run directory does not exist');
+  const errors=[],REPORT_FILE_CAP=16*1024*1024;
+  const readRunFile=f=>{let fd=null;try{fd=openRepoFile(`.vuln-hunt/runs/${expect.runId}/${f}`);const buf=readBounded(fd,REPORT_FILE_CAP);if(buf===null){errors.push(`${f}: larger than 16 MiB`);return null}return{text:buf.toString('utf8'),size:buf.length}}catch(e){const why=openFailure(e);if(!why)throw e;errors.push(`${f}: ${why==='missing from the working tree'?'missing':why}`);return null}finally{if(fd!==null)fs.closeSync(fd)}};
+  const report=readRunFile('vuln-hunt-report.md'),findingsFile=readRunFile('findings.jsonl'),coverageFile=readRunFile('coverage.jsonl');
+  if(report&&report.size<200)errors.push('vuln-hunt-report.md is under 200 bytes');
+  const readJsonl=(f,r)=>{if(!r)return[];const out=[];for(const line of r.text.split(/\r?\n/)){if(!line.trim())continue;let o;try{o=JSON.parse(line)}catch{errors.push(`${f}: a line is not JSON`);continue}if(!o||typeof o!=='object'||Array.isArray(o)){errors.push(`${f}: a line is not a JSON object`);continue}out.push(o)}return out};
+  const findings=readJsonl('findings.jsonl',findingsFile),coverage=readJsonl('coverage.jsonl',coverageFile);
+  const show=v=>JSON.stringify(String(v).slice(0,64)).replace(/[^\x20-\x7e]/g,'?');
+  const want=new Map(expect.findings.map(f=>[f.candidateId,f])),seen=new Set();
+  for(const f of findings){
+    const id=typeof f.candidateId==='string'?f.candidateId:'',w=want.get(id);
+    if(!w){errors.push(`findings.jsonl: candidate ${id?show(id):'(missing)'} is not in the verified set`);continue}
+    if(seen.has(id))errors.push(`findings.jsonl: duplicate candidate ${id}`);
+    seen.add(id);
+    if(!SEVERITIES.includes(f.severity))errors.push(`findings.jsonl: candidate ${id} has invalid severity`);
+    if(f.findingId!==w.findingId)errors.push(`findings.jsonl: candidate ${id} does not carry this run's findingId, which the next run's reconciliation needs`);
+    if(f.relation!==w.relation)errors.push(`findings.jsonl: candidate ${id} has relation ${show(f.relation)}, expected ${w.relation}`);
+    if(f.evidence!==w.evidence)errors.push(`findings.jsonl: candidate ${id} has evidence ${show(f.evidence)}, expected ${w.evidence}`);
+    if(typeof f.file!=='string'||!f.file||!Number.isInteger(f.line)||f.line<1||typeof f.symbol!=='string')errors.push(`findings.jsonl: candidate ${id} lacks the file, line and symbol the next run's reconciliation needs`);
+  }
+  for(const id of want.keys())if(!seen.has(id))errors.push(`findings.jsonl: verified candidate ${id} is missing`);
+  const wantUnits=new Map(expect.coverage.map(u=>[u.unitId,u.status])),unitSeen=new Map();
+  for(const c of coverage){
+    const id=typeof c.unitId==='string'?c.unitId:'';
+    if(!wantUnits.has(id)){errors.push(`coverage.jsonl: unit ${id?show(id):'(missing)'} is not attested`);continue}
+    unitSeen.set(id,(unitSeen.get(id)||0)+1);
+    if(c.status!==wantUnits.get(id))errors.push(`coverage.jsonl: unit ${id} has status ${show(c.status)}, expected ${wantUnits.get(id)}`);
+  }
+  for(const id of wantUnits.keys())if(!unitSeen.has(id))errors.push(`coverage.jsonl: unit ${id} is missing`);else if(unitSeen.get(id)>1)errors.push(`coverage.jsonl: unit ${id} appears more than once`);
+  emitWithHash({version:3,ok:errors.length===0,errors:errors.slice(0,64),errorCount:errors.length,counts:{findings:findings.length,coverage:coverage.length},expectHash:crypto.createHash('sha256').update(canonExpect(expect)).digest('hex')});process.exit(0);
+}
+// Prior findings come from earlier run directories under the repository's
+// own output namespace, so every field is bounded and typed here and the
+// output stays small enough for a mechanic to return verbatim: the most
+// recent runs first, a fixed number of runs and findings per run, and a
+// truncated flag when anything was left out.
+if(priorFindings){
+  const PRIOR_RUN_CAP=16,PER_RUN_CAP=64,PRIOR_FILE_CAP=4*1024*1024;
+  let truncated=false;const runs=[];
+  if(outputDirExists('.vuln-hunt')&&outputDirExists('.vuln-hunt/runs')){
+    const runsRoot=path.join(cwd,'.vuln-hunt','runs');
+    for(const e of fs.readdirSync(runsRoot,{withFileTypes:true})){
+      if(!RUN_ID_RE.test(e.name)||e.name===priorFindingsExclude)continue;
+      let st;try{st=fs.lstatSync(path.join(runsRoot,e.name))}catch{continue}
+      if(!st.isSymbolicLink()&&st.isDirectory())runs.push({name:e.name,mtime:st.mtimeMs});
+    }
+  }
+  runs.sort((a,b)=>b.mtime-a.mtime||(a.name<b.name?-1:a.name>b.name?1:0));
+  if(runs.length>PRIOR_RUN_CAP)truncated=true;
+  const bounded=(v,n)=>typeof v==='string'&&v.length>0&&v.length<=n&&!/[\0-\x1f\x7f]/.test(v)&&!loneSurrogate.test(v)?v:null;
+  const prior=[];
+  for(const r of runs.slice(0,PRIOR_RUN_CAP)){
+    let raw=null,fd=null;
+    try{
+      fd=openRepoFile(`.vuln-hunt/runs/${r.name}/findings.jsonl`);
+      const size=Number(fs.fstatSync(fd).size),n=Math.min(size,PRIOR_FILE_CAP),buf=Buffer.alloc(n);let off=0;
+      while(off<n){const k=fs.readSync(fd,buf,off,n-off,off);if(!k)break;off+=k}
+      raw=buf.subarray(0,off).toString('utf8');
+      if(size>PRIOR_FILE_CAP){truncated=true;raw=raw.slice(0,raw.lastIndexOf('\n')+1)}
+    }catch{raw=null}finally{if(fd!==null)fs.closeSync(fd)}
+    if(raw===null)continue;
+    const findings=[];
+    for(const line of raw.split(/\r?\n/)){
+      if(!line.trim())continue;
+      if(findings.length>=PER_RUN_CAP){truncated=true;break}
+      let o;try{o=JSON.parse(line)}catch{continue}
+      if(!o||typeof o!=='object'||Array.isArray(o))continue;
+      findings.push({candidateId:typeof o.candidateId==='string'&&/^[A-Za-z0-9._-]{1,32}$/.test(o.candidateId)?o.candidateId:null,findingId:typeof o.findingId==='string'&&/^[0-9a-f]{64}$/.test(o.findingId)?o.findingId:null,file:typeof o.file==='string'&&o.file.length<=1024&&safeRel(o.file)&&!loneSurrogate.test(o.file)?o.file:null,line:Number.isInteger(o.line)&&o.line>=1&&o.line<=MAX_LINE?o.line:null,symbol:bounded(o.symbol,256),severity:SEVERITIES.includes(o.severity)?o.severity:null,evidence:EVIDENCE_LEVELS.includes(o.evidence)?o.evidence:null,rootKey:bounded(o.rootKey,512)});
+    }
+    prior.push({runId:r.name,findings});
+  }
+  emitWithHash({version:3,priorRuns:prior,truncated});process.exit(0);
+}
 function mergeBase(a,b){const s=text(git(['merge-base',a,b]));if(!oid(s))throw new Error(`could not resolve merge-base for ${a} and ${b}`);return s}
 function emptyTree(){const s=text(git(['hash-object','-t','tree','--stdin'],{input:Buffer.alloc(0)}));if(!oid(s))throw new Error('could not hash empty tree');return s}
 // Research workers have no shell, so range mode carries the change itself:
@@ -250,12 +452,6 @@ function mechanicalUnits(manifest){
   return{mechanicalUnitTarget:UNIT_TARGET,mechanicalUnitCap:UNIT_CAP,units,unitsHash:hash(canon)};
 }
 const partialClone=isPartialClone(),graftsPresent=hasGrafts(),alternatesPresent=hasAlternates();if(alternatesPresent)throw new Error('Git object alternates detected; external attestation refuses external object stores. Use a standalone fully hydrated clone');if(range&&graftsPresent)throw new Error('Git info/grafts detected; remove it before range attestation because it rewrites commit ancestry');if(range&&partialClone)throw new Error('partial clone detected; range attestation refuses commands that may demand-fetch missing objects. Use a fully hydrated clone');
-// Untracked OS, editor and Claude Code metadata never enters the manifest.
-// --exclude patterns apply only to untracked files, so tracked copies (for
-// example a committed .vscode/tasks.json) stay in coverage. Keep this list
-// identical to LOCAL_METADATA_EXCLUDES in vuln-hunt.js.
-const LOCAL_METADATA_EXCLUDES=[".DS_Store","Thumbs.db","ehthumbs.db","desktop.ini","/.idea/","/.vscode/","/.claude/settings.local.json"];
-const untrackedFilter=['--exclude-per-directory=.gitignore',...LOCAL_METADATA_EXCLUDES.map(p=>`--exclude=${p}`)];
 const revision=rev('HEAD'),trackedRaw=git(['ls-files','--cached','-z']).stdout,manifestRaw=git(['ls-files','--cached','--others',...untrackedFilter,'-z']).stdout,manifest=zlist(manifestRaw);
 const unsafePaths=manifest.filter(p=>!safeRel(p)),untracked=zlist(git(['ls-files','--others',...untrackedFilter,'-z']).stdout),deletedTracked=zlist(git(['ls-files','--deleted','-z']).stdout),special=stageSpecial(),filters=filterInfo(trackedRaw);
 // Git does not compare an assume-unchanged (lowercase tag) or skip-worktree
@@ -287,11 +483,28 @@ const contentHash=crypto.createHash('sha256').update(Buffer.concat(contentParts)
 const rootCounts=Object.create(null);for(const p of manifest){const root=p.split('/')[0];rootCounts[root]=(rootCounts[root]||0)+1}
 const unitInfo=mechanicalUnits(manifest);
 const ignoreCase=boolConfig('core.ignoreCase'),caseMap=new Map(),caseCollisions=[];let caseCollisionCount=0;if(ignoreCase)for(const p of manifest){const k=p.normalize('NFC').toLowerCase();if(caseMap.has(k)&&caseMap.get(k)!==p){caseCollisionCount++;if(caseCollisions.length<32)caseCollisions.push([caseMap.get(k),p])}else caseMap.set(k,p)}
-const out={version:4,runId,repoRoot,revision,dirty,worktreeState,...filters,manifestHash:hash(manifestRaw),contentHash,totalFiles:manifest.length,rootCounts,...unitInfo,trackedSymlinks:special.trackedSymlinks,submodules:special.submodules,deletedTracked,sparse:boolConfig('core.sparseCheckout'),shallow:text(git(['rev-parse','--is-shallow-repository']))==='true',partialClone,graftsPresent,alternatesPresent,ignoreCase,caseCollisionCount,caseCollisions,lfsPointers,lfsPointerCount,lfsPointersTruncated:lfsPointerCount>lfsPointers.length,unsupportedPaths:unsafePaths,outputPathSafe:isOutputSafe(runId,new Set(zlist(trackedRaw)),ignoreCase),range:ri.range,rangeBase:ri.rangeBase,rangeHead:ri.rangeHead,changedFiles:changed.slice(0,256),changedFilesTruncated:changed.length>256,changedFilesHash:hash(ri.changedRaw),changedFilesCount:changed.length,rangeFiles:ri.rangeFiles,rangeFilesTruncated:ri.rangeFilesTruncated,rangeEvidenceTruncated:ri.rangeEvidenceTruncated,helperPath:helperPath.replace(/\\/g,'/'),nodePath:nodePath.replace(/\\/g,'/')};
+// Policy documents are repository-local files the operator names as security
+// context. They are hashed into the attestation, so their bytes are covered by
+// stateHash and the freshness check; the workflow treats their text as
+// untrusted evidence, never as instructions.
+const policyFold=p=>ignoreCase?p.toLowerCase():p;
+const policyDocEntries=[];
+for(const p of policyDocArgs){
+  if(!safeRel(p))throw new Error(`--policy-doc must be a repository-relative path: ${p}`);
+  if(!manifest.includes(p))throw new Error(`policy document is not in the attested manifest (it must be tracked or non-ignored untracked): ${p}`);
+  if(trackedSymlinkSet.has(p)||submoduleSet.has(p))throw new Error(`policy document is not a regular file: ${p}`);
+  let bytes=null,fd=null;
+  try{fd=openRepoFile(p);bytes=fs.readFileSync(fd)}
+  catch(e){const why=openFailure(e);if(why)throw new Error(`policy document is not a regular file (${why}): ${p}`);throw e}
+  finally{if(fd!==null)fs.closeSync(fd)}
+  policyDocEntries.push({path:p,sha256:crypto.createHash('sha256').update(bytes).digest('hex'),bytes:bytes.length});
+}
+if(new Set(policyDocEntries.map(d=>policyFold(d.path))).size!==policyDocEntries.length)throw new Error('--policy-doc names the same document twice');
+const out={version:5,runId,repoRoot,revision,dirty,worktreeState,...filters,manifestHash:hash(manifestRaw),contentHash,totalFiles:manifest.length,rootCounts,...unitInfo,policyDocs:policyDocEntries,trackedSymlinks:special.trackedSymlinks,submodules:special.submodules,deletedTracked,sparse:boolConfig('core.sparseCheckout'),shallow:text(git(['rev-parse','--is-shallow-repository']))==='true',partialClone,graftsPresent,alternatesPresent,ignoreCase,caseCollisionCount,caseCollisions,lfsPointers,lfsPointerCount,lfsPointersTruncated:lfsPointerCount>lfsPointers.length,unsupportedPaths:unsafePaths,outputPathSafe:isOutputSafe(runId,new Set(zlist(trackedRaw)),ignoreCase),range:ri.range,rangeBase:ri.rangeBase,rangeHead:ri.rangeHead,changedFiles:changed.slice(0,256),changedFilesTruncated:changed.length>256,changedFilesHash:hash(ri.changedRaw),changedFilesCount:changed.length,rangeFiles:ri.rangeFiles,rangeFilesTruncated:ri.rangeFilesTruncated,rangeEvidenceTruncated:ri.rangeEvidenceTruncated,helperPath:helperPath.replace(/\\/g,'/'),nodePath:nodePath.replace(/\\/g,'/')};
 // Every field that describes repository state. stateHash summarizes them so
 // the workflow can compare a short --fingerprint line instead of the whole
 // attestation.
-const STATE_FIELDS=['version','repoRoot','revision','dirty','worktreeState','customFiltersCount','customFiltersHash','customFilterDrivers','manifestHash','contentHash','totalFiles','rootCounts','mechanicalUnitTarget','mechanicalUnitCap','units','unitsHash','trackedSymlinks','submodules','deletedTracked','sparse','shallow','partialClone','graftsPresent','alternatesPresent','ignoreCase','caseCollisionCount','caseCollisions','lfsPointers','lfsPointerCount','lfsPointersTruncated','unsupportedPaths','range','rangeBase','rangeHead','changedFiles','changedFilesTruncated','changedFilesHash','changedFilesCount','rangeFiles','rangeFilesTruncated','rangeEvidenceTruncated'];
+const STATE_FIELDS=['version','repoRoot','revision','dirty','worktreeState','customFiltersCount','customFiltersHash','customFilterDrivers','manifestHash','contentHash','totalFiles','rootCounts','mechanicalUnitTarget','mechanicalUnitCap','units','unitsHash','policyDocs','trackedSymlinks','submodules','deletedTracked','sparse','shallow','partialClone','graftsPresent','alternatesPresent','ignoreCase','caseCollisionCount','caseCollisions','lfsPointers','lfsPointerCount','lfsPointersTruncated','unsupportedPaths','range','rangeBase','rangeHead','changedFiles','changedFilesTruncated','changedFilesHash','changedFilesCount','rangeFiles','rangeFilesTruncated','rangeEvidenceTruncated'];
 // Keys are sorted at every level so the workflow, which recomputes this hash
 // over the attestation it was handed, does not depend on key order surviving
 // the trip through the model that passes it along.
@@ -301,6 +514,57 @@ out.stateHash=crypto.createHash('sha256').update(JSON.stringify(STATE_FIELDS.map
 // helper's own repository-boundary check from the repository root, which the
 // workflow cannot repeat, so the workflow requires them to equal the attested
 // helperPath and nodePath.
-if(fingerprintRunId){emit({version:4,runId,repoRoot,revision,worktreeState,manifestHash:out.manifestHash,contentHash,stateHash:out.stateHash,outputPathSafe:out.outputPathSafe,helperPath:out.helperPath,nodePath:out.nodePath});process.exit(0)}
+if(fingerprintRunId){emit({version:5,runId,repoRoot,revision,worktreeState,manifestHash:out.manifestHash,contentHash,stateHash:out.stateHash,outputPathSafe:out.outputPathSafe,helperPath:out.helperPath,nodePath:out.nodePath,policyDocCount:policyDocEntries.length});process.exit(0)}
+// --emit-run writes a private run directory outside the repository holding
+// the attestation and a generated workflow script with the attestation
+// embedded verbatim. The session then calls the Workflow tool with that
+// script's path and only its small options object, so the attestation never
+// passes through a model. The generated script stays on disk so the run can
+// be resumed; remove the directory by hand once the run is finished.
+if(emitRun){
+  const templates=[path.join(__dirname,'vuln-hunt.js'),path.join(os.homedir(),'.claude','workflows','vuln-hunt.js')];
+  let template=null;
+  for(const p of templates){
+    let st;try{st=fs.lstatSync(p)}catch{continue}
+    if(!st.isFile())continue;
+    const realP=real(p);if(untrusted(realP))continue;
+    const src=fs.readFileSync(realP,'utf8');
+    if(!/^export const meta=/.test(src))continue;
+    template={path:realP,src,sha256:crypto.createHash('sha256').update(src).digest('hex')};
+    break;
+  }
+  if(!template)throw new Error('could not find the installed vuln-hunt.js workflow template next to this helper or in ~/.claude/workflows; the template must live outside the scanned repository');
+  const m=/^export const meta=\{[\s\S]*?\};\s*/.exec(template.src);
+  if(!m)throw new Error('workflow template does not begin with an export const meta literal');
+  // The attestation is embedded as the text of a string literal and parsed
+  // with JSON.parse, so the script sees exactly the object the attestation file
+  // holds. An object literal would not: a "__proto__" key, such as a top-level
+  // directory of that name in rootCounts, sets a prototype there instead of a
+  // property. JSON.stringify of a string is a valid JavaScript string literal
+  // once U+2028 and U+2029, which older parsers reject in literals, are
+  // escaped.
+  const json=JSON.stringify(out);
+  const literal=JSON.stringify(json).split(String.fromCharCode(0x2028)).join('\\u2028').split(String.fromCharCode(0x2029)).join('\\u2029');
+  // The prelude only declares __vhAttestation; it never touches the runtime's
+  // args binding, so options arrive however the runtime passes them (object,
+  // JSON string or nothing) and the template merges the embedded attestation
+  // in, refusing an args.attestation that differs from it.
+  const script=`${m[0]}// Generated for run ${out.runId} by vuln-hunt-attest.js --emit-run. The attestation below is this helper's own output, embedded verbatim; the rest is the installed workflow template (sha256 ${template.sha256}). The workflow cannot load scripts from the scanned repository: this file was written by the trusted helper outside it.\nconst __vhAttestation=JSON.parse(${literal});\n${template.src.slice(m[0].length)}`;
+  // Compile the complete generated script the way the workflow runtime hands
+  // it its bindings, as an async function body with args as a parameter, in
+  // both sloppy and strict mode. This catches a prelude that breaks under
+  // either, and a meta literal whose first "};" is not its end.
+  const AsyncFunction=Object.getPrototypeOf(async function(){}).constructor,body=script.replace(/^export const meta=/,'const meta=');
+  for(const prefix of ['','"use strict";\n'])try{new AsyncFunction('args','agent','parallel','pipeline','phase','log',prefix+body)}catch(e){throw new Error(`the generated run script does not compile as a workflow body${prefix?' in strict mode':''}: ${String(e&&e.message||e)}`)}
+  // mkdtemp creates the directory owner-only on POSIX; on Windows it inherits
+  // the per-user temporary directory's ACL. A TMPDIR pointing into the scanned
+  // repository would put the run script under repository control.
+  const runDir=fs.mkdtempSync(path.join(os.tmpdir(),'vuln-hunt-run-'));
+  if(untrusted(real(runDir))){fs.rmSync(runDir,{recursive:true,force:true});throw new Error('the temporary directory resolves inside the scanned repository; point TMPDIR (TEMP on Windows) outside it')}
+  const attestationPath=path.join(runDir,'attestation.json'),scriptPath=path.join(runDir,'vuln-hunt-run.js');
+  fs.writeFileSync(attestationPath,json+'\n',{mode:0o600});
+  fs.writeFileSync(scriptPath,script,{mode:0o600});
+  emit({version:2,ok:true,runDir,attestationPath,scriptPath,runId:out.runId,stateHash:out.stateHash,attestationBytes:Buffer.byteLength(json),templatePath:template.path.replace(/\\/g,'/'),templateHash:template.sha256,scriptHash:crypto.createHash('sha256').update(script).digest('hex'),policyDocs:policyDocEntries.map(d=>d.path)});process.exit(0);
+}
 // Windows PowerShell 5.1 `Set-Content -Encoding utf8` prepends a BOM.
 if(comparePath){const before=JSON.parse(fs.readFileSync(path.resolve(comparePath),'utf8').replace(/^﻿/,'')),mismatches=STATE_FIELDS.filter(k=>JSON.stringify(before?.[k]??null)!==JSON.stringify(out?.[k]??null));emit({ok:mismatches.length===0,mismatches,beforeRunId:before?.runId||null,currentRunId:out.runId,current:out});process.exitCode=mismatches.length?2:0}else emit(out);
