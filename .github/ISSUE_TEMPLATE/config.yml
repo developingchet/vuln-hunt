@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Report a vulnerability in vuln-hunt
+    url: https://github.com/developingchet/vuln-hunt/security/advisories/new
+    about: Private reporting through the Security tab, not a public issue; see SECURITY.md.
+  - name: Claude Code problems
+    url: https://github.com/anthropics/claude-code/issues
+    about: Problems in Claude Code itself, its workflow runtime or the models are handled by Anthropic.

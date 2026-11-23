@@ -791,6 +791,14 @@ the agent files staying in step with `vuln-hunt-agents.json`, the launcher's arg
 only) and `SHA256SUMS.txt`. CI runs it on Windows and Ubuntu and validates the plugin. `.gitattributes` keeps
 every checkout LF, so `sha256sum -c SHA256SUMS.txt` works anywhere.
 
+## Contributing
+
+Bug reports and pull requests are welcome; [CONTRIBUTING.md](CONTRIBUTING.md) covers the issue forms, the
+development setup and what a pull request needs. [AGENTS.md](AGENTS.md) is the same guidance condensed for
+coding agents. [SUPPORT.md](SUPPORT.md) says where each kind of question belongs, and
+[CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) sets the conduct expectations. Questions go through the
+[question form](https://github.com/developingchet/vuln-hunt/issues/new?template=question.yml).
+
 ## Security
 
 Report vulnerabilities in vuln-hunt itself through private vulnerability reporting; see [SECURITY.md](SECURITY.md).

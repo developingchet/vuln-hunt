@@ -1,5 +1,6 @@
 ---
-description: Show the vuln-hunt launcher, attestation, prerequisite and postflight commands with this installation's paths filled in.
+name: helpers
+description: Show the vuln-hunt launcher, attestation, prerequisite and postflight commands with this installation's paths filled in, when asked which commands to run by hand or how to check an installation.
 disable-model-invocation: true
 ---
 

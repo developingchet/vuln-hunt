@@ -1,0 +1,107 @@
+name: Bug report
+description: Report a vuln-hunt problem. Security vulnerabilities in vuln-hunt go through a private advisory instead.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Security vulnerabilities in vuln-hunt must not be reported here; use [private vulnerability reporting](https://github.com/developingchet/vuln-hunt/security/advisories/new) as [SECURITY.md](https://github.com/developingchet/vuln-hunt/blob/main/SECURITY.md) describes.
+
+        Attestations, results and reports describe the scanned repository. Before pasting them, remove file names, code and findings from any repository you may not share, and never post an unfixed vulnerability in someone else's code. A reproduction on a small public or throwaway repository helps most.
+  - type: input
+    id: version
+    attributes:
+      label: vuln-hunt version
+      description: The `version` in `.claude-plugin/plugin.json` of your install (`/plugin` shows it), or the commit you run from.
+      placeholder: 0.1.1
+    validations:
+      required: true
+  - type: input
+    id: claude-code
+    attributes:
+      label: Claude Code version
+      description: The output of `claude --version`.
+      placeholder: 2.1.325 (Claude Code)
+    validations:
+      required: true
+  - type: input
+    id: platform
+    attributes:
+      label: Platform
+      description: Operating system, the shell you started Claude Code from, and the Node.js and Git versions.
+      placeholder: Windows 11, PowerShell 7.5, Node 22.20, Git 2.51
+    validations:
+      required: true
+  - type: dropdown
+    id: install
+    attributes:
+      label: Installation
+      options:
+        - Plugin from the marketplace (follows main)
+        - Plugin pinned to a release
+        - Manual install (Install-VulnHunt.ps1)
+        - Loaded from a clone with --plugin-dir
+    validations:
+      required: true
+  - type: dropdown
+    id: session
+    attributes:
+      label: How the session was started
+      options:
+        - Through the launcher (vuln-hunt-launch.js)
+        - A normal interactive session
+        - Print mode (claude -p)
+        - Not applicable
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Attestation, freshness check or postflight
+        - /vuln-hunt:scan arguments and options
+        - Workflow run (stages, verification, coverage ledger)
+        - Report writing or validation
+        - Launcher
+        - Windows installer or wrappers
+        - Documentation
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: What happened
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+      description: The command you ran, with the range and options you passed, and how to build a repository that shows the problem.
+    validations:
+      required: true
+  - type: textarea
+    id: output
+    attributes:
+      label: Output
+      description: The error, the helper's output or the relevant part of the result, with repository content removed as described above.
+      render: text
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checks
+      options:
+        - label: Everything above is free of code, file names and findings from repositories I may not share, and of unfixed vulnerabilities in code I do not maintain.
+          required: true
+        - label: This is not a security vulnerability in vuln-hunt itself.
+          required: true
+        - label: The problem happens on the latest release.
+          required: false

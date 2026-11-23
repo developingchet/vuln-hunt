@@ -18,9 +18,14 @@ Please include:
   mode)
 - steps to reproduce, and the impact you expect
 
-GitHub keeps the report confidential until a fix is released.
+GitHub keeps the report confidential until the advisory is published.
+
+Reproduce a problem only in repositories and systems you own or are authorized to test. Do not include
+third-party code, or an unfixed vulnerability in someone else's repository, in a report.
 
 ## Response timeline
+
+These are targets, not guarantees:
 
 - Acknowledgement within 3 business days.
 - A status update within 7 business days.
@@ -37,7 +42,7 @@ In scope:
 - strict provenance accepting a stale or altered attestation
 
 Out of scope:
-- false positives or missed vulnerabilities in scan results
+- false positives or missed vulnerabilities in scan results (report these as public bug reports; see [CONTRIBUTING.md](CONTRIBUTING.md))
 - problems in Claude Code or the models themselves (report those to Anthropic)
 - dynamic mode run without the external containment it asserts; see [ISOLATION.md](ISOLATION.md)
 - prompt injection that only changes model output and does not cross a tool or file boundary

@@ -1,0 +1,54 @@
+name: Feature request
+description: Suggest a new option, stage, check or improvement.
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Describe the problem first; a proposal is easier to agree on once the problem is clear.
+
+        Security vulnerabilities in vuln-hunt are not reported in issues; follow
+        [SECURITY.md](https://github.com/developingchet/vuln-hunt/blob/main/SECURITY.md) and use
+        [private vulnerability reporting](https://github.com/developingchet/vuln-hunt/security/advisories/new).
+        Do not post an unfixed vulnerability in someone else's repository here. Keep code, file names and
+        findings from any repository you may not share out of public issues.
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What you are trying to do, and what stops you today.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed change
+      description: How vuln-hunt would behave, including any new option, its values and its default.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Attestation, freshness check or postflight
+        - /vuln-hunt:scan arguments and options
+        - Workflow stages or verification rules
+        - Reports and cross-run reconciliation
+        - Dynamic reproduction
+        - Launcher or installer
+        - Documentation
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: security
+    attributes:
+      label: Effect on the security model
+      description: Would this give a worker more tools, let repository content reach a new place, or move a check from code into a prompt? Say why that is safe, or write "none".
+    validations:
+      required: true
