@@ -1,0 +1,31 @@
+name: Question
+description: Ask how to install, configure or run vuln-hunt.
+labels: ["question"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        The [README](https://github.com/developingchet/vuln-hunt#readme) covers installation, options, outputs and the security model, and `/vuln-hunt:options` lists every option.
+
+        Security vulnerabilities in vuln-hunt are not reported in issues; follow
+        [SECURITY.md](https://github.com/developingchet/vuln-hunt/blob/main/SECURITY.md) and use
+        [private vulnerability reporting](https://github.com/developingchet/vuln-hunt/security/advisories/new).
+        Do not post an unfixed vulnerability in someone else's repository here. Keep code, file names and
+        findings from any repository you may not share out of public issues.
+  - type: textarea
+    id: question
+    attributes:
+      label: Question
+    validations:
+      required: true
+  - type: textarea
+    id: tried
+    attributes:
+      label: What you tried
+      description: Commands, options and the README sections you have read.
+  - type: input
+    id: versions
+    attributes:
+      label: Versions
+      description: vuln-hunt version, Claude Code version and operating system.
+      placeholder: vuln-hunt 0.1.1, Claude Code 2.1.325, Ubuntu 24.04
